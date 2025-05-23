@@ -10,6 +10,8 @@
 #define MAX_CLIENTS 2
 #define MAX_CARD_COUNT 24
 
+#define START_GAME 'S'
+
 #pragma pack(push, 1) // 1바이트 정렬
 typedef struct Card
 {
@@ -114,16 +116,24 @@ void GenerateCards()    // 카드 id 생성
     printf("\n");
 }
 
-/*
-void Broadcast()
+void BroadcastCards()
 {
+    int s = sizeof(Card);
+    int totalSize = s * MAX_CARD_COUNT;
 
+    for (int i = 0; i < g_clientCount; i++)
+    {
+        if (g_clients[i])
+        {
+            send(g_clients[i]->socket, (const char*)g_cards, totalSize, 0);
+        }
+    }
 }
-*/
 
 DWORD WINAPI WaitForGameStart(LPVOID arg)
 {
     printf("WaitForGameStart\n");
+
     while (true)
     {
         Sleep(1000);
@@ -221,10 +231,22 @@ void Init()
     }
 }
 
+// 클라이언트에게 (char)메시지를 보낸다
+void SendMessageToClient(LPVOID arg, char msg)
+{
+    ClientInfo* info = (ClientInfo*)arg;
+    printf("%d: SendMessage\n", ntohs(info->addr.sin_port));
+    send(info->socket, &msg, sizeof(msg), 0);
+}
+
 void PlayGame(LPVOID arg)
 {
     ClientInfo* info = (ClientInfo*)arg;
     printf("%d: PlayGame\n", ntohs(info->addr.sin_port));
+
+    char message = START_GAME;
+    SendMessageToClient(info, message);
+    BroadcastCards();
 
     while (true)
     {
@@ -235,13 +257,6 @@ void PlayGame(LPVOID arg)
         
         if (info->player.myTurn == false)
             continue;
-
-        // TODO : 테스트, 카드 id가 C# 클라이언트로 전송되는지 (구조체 패딩)
-        for (int i = 0; i < MAX_CARD_COUNT; i++)
-        {
-            send(info->socket, (char*)&g_cards[i], sizeof(g_cards[i]), 0);
-            printf("%d, ", g_cards[i].id);
-        }
 
         printf("Test!\n");
         break;
