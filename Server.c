@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <windows.h>
 #include <winsock2.h>
+#include <conio.h>
 
 #define PORT 8888
 #define MAX_CLIENTS 2
@@ -33,6 +34,37 @@ int g_clientCount = 0;
 
 volatile bool g_startGame = false;  // 게임 시작 여부
 Card g_cards[MAX_CARD_COUNT];
+
+void ShutdownServer()
+{
+    printf("Shutting down server...\n");
+
+    for (int i = 0; i < g_clientCount; i++)
+    {
+        if (g_clients[i])
+        {
+            closesocket(g_clients[i]->socket);
+            free(g_clients[i]);
+        }
+    }
+
+    closesocket(g_server_socket);
+    WSACleanup();
+    exit(0);
+}
+
+DWORD WINAPI WaitForShutdownServer(LPVOID arg)
+{
+    while (true)
+    {
+        // q 입력 감지
+        if (kbhit() && getch() == 'q')
+            break;
+    }
+
+    ShutdownServer();
+    return 0;
+}
 
 DWORD WINAPI WaitForGameStart(LPVOID arg)
 {
@@ -68,7 +100,7 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
         g_startGame = true;
     }
 
-    ExitThread(0);
+    return 0;
 }
 
 void Init()
@@ -113,13 +145,20 @@ void Init()
 
     printf("Echo server running on port %d\n", PORT);
 
-    // 게임 시작 대기 스레드 생성
-    HANDLE thread_id = CreateThread(NULL, 0, WaitForGameStart, NULL, 0, NULL);
+    // 서버 셧다운 대기 스레드 생성
+    HANDLE thread_id = CreateThread(NULL, 0, WaitForShutdownServer, NULL, 0, NULL);
     if (thread_id == NULL)
     {
         perror("CreateThread() failed");
-        CloseHandle(thread_id);
-        exit(1);
+        ShutdownServer();
+    }
+
+    // 게임 시작 대기 스레드 생성
+    thread_id = CreateThread(NULL, 0, WaitForGameStart, NULL, 0, NULL);
+    if (thread_id == NULL)
+    {
+        perror("CreateThread() failed");
+        ShutdownServer();
     }
 }
 
@@ -237,5 +276,5 @@ int main()
 {
     Init();
     Connect();
-    WSACleanup();
+    ShutdownServer();
 }
