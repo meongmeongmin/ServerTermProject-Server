@@ -4,16 +4,20 @@
 #include <windows.h>
 #include <winsock2.h>
 #include <conio.h>
+#include <time.h>
 
 #define PORT 8888
 #define MAX_CLIENTS 2
 #define MAX_CARD_COUNT 24
 
+#pragma pack(push, 1) // 1바이트 정렬
 typedef struct Card
 {
-    bool matched;   // 카드가 짝 맞춰져 사라졌는지 여부
-    char name[20];
+    int id;
+    bool isFlip;    // 카드가 뒤집힌 상태인가 (앞면인가?)
+    bool isLock;    // 맞춘 카드인가
 } Card;
+#pragma pack(pop)
 
 typedef struct Player
 {
@@ -66,6 +70,57 @@ DWORD WINAPI WaitForShutdownServer(LPVOID arg)
     return 0;
 }
 
+void Shuffle(int* ids)  // 카드 id 섞음
+{
+    printf("Shuffle\n");
+    int size = MAX_CARD_COUNT - 1;
+
+    for (int i = size; i > 0; i--)
+    {
+        int randIndex = rand() % (i + 1);
+
+        // Swap
+        int swap = ids[i];
+        ids[i] = ids[randIndex];
+        ids[randIndex] = swap;
+    }
+}
+
+void GenerateCards()    // 카드 id 생성
+{
+    printf("GenerateCards\n");
+
+    int ids[MAX_CARD_COUNT];
+    int count = MAX_CARD_COUNT / 2;
+
+    for (int i = 0; i < count; i++) 
+    { 
+        ids[i * 2] = i;
+        ids[i * 2 + 1] = i;
+    }
+
+    Shuffle(ids);
+    
+    printf("Card id: ");
+    for (int i = 0; i < MAX_CARD_COUNT; i++)
+    {
+        g_cards[i].id = ids[i];
+        g_cards[i].isFlip = false;
+        g_cards[i].isLock = false;
+
+        printf("%d, ", g_cards[i].id);
+    }
+
+    printf("\n");
+}
+
+/*
+void Broadcast()
+{
+
+}
+*/
+
 DWORD WINAPI WaitForGameStart(LPVOID arg)
 {
     printf("WaitForGameStart\n");
@@ -90,6 +145,8 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
             continue;
         }
 
+        GenerateCards();
+
         // 먼저 시작할 플레이어 정하기
         // srand(time(NULL));
         // int idx = rand() % MAX_CLIENTS; // (0 ~ 1) 정수 범위
@@ -105,6 +162,8 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
 
 void Init()
 {
+    srand(time(NULL));
+
     WSADATA wsa;
     printf("Initializing Winsock...\n");
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
@@ -177,7 +236,12 @@ void PlayGame(LPVOID arg)
         if (info->player.myTurn == false)
             continue;
 
-        // TODO
+        // TODO : 테스트, 카드 id가 C# 클라이언트로 전송되는지 (구조체 패딩)
+        for (int i = 0; i < MAX_CARD_COUNT; i++)
+        {
+            send(info->socket, (char*)&g_cards[i], sizeof(g_cards[i]), 0);
+            printf("%d, ", g_cards[i].id);
+        }
 
         printf("Test!\n");
         break;
