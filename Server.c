@@ -116,10 +116,22 @@ void GenerateCards()    // 카드 id 생성
     printf("\n");
 }
 
+void BroadcastMessage(char msg)
+{
+    printf("BroadcastMessage\n");
+
+    for (int i = 0; i < g_clientCount; i++)
+    {
+        if (g_clients[i])
+            send(g_clients[i]->socket, &msg, sizeof(msg), 0);
+    }
+}
+
 void BroadcastCards()
 {
-    int s = sizeof(Card);
-    int totalSize = s * MAX_CARD_COUNT;
+    int size = sizeof(Card);
+    int totalSize = size * MAX_CARD_COUNT;
+    printf("BroadcastCards\n");
 
     for (int i = 0; i < g_clientCount; i++)
     {
@@ -157,6 +169,12 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
 
         GenerateCards();
 
+        char message = START_GAME;
+        BroadcastMessage(message);
+        BroadcastCards();
+
+        Sleep(1000);
+
         // 먼저 시작할 플레이어 정하기
         // srand(time(NULL));
         // int idx = rand() % MAX_CLIENTS; // (0 ~ 1) 정수 범위
@@ -165,6 +183,7 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
         // Test
         g_clients[0]->player.myTurn = true;
         g_startGame = true;
+
     }
 
     return 0;
@@ -231,12 +250,49 @@ void Init()
     }
 }
 
-// 클라이언트에게 (char)메시지를 보낸다
-void SendMessageToClient(LPVOID arg, char msg)
+void WaitForCardPick(LPVOID arg)
 {
     ClientInfo* info = (ClientInfo*)arg;
-    printf("%d: SendMessage\n", ntohs(info->addr.sin_port));
-    send(info->socket, &msg, sizeof(msg), 0);
+    int count = 0;
+    int card1Idx = -1;  // 첫번째로 고른 카드 인덱스
+
+    printf("%d: WaitForCardPick\n", ntohs(info->addr.sin_port));
+    printf("======================================================================================================\n");
+    
+    // 카드를 두 번 뽑을 때까지 기다린다
+    while (count < 2)
+    {
+        int index;  // 선택한 카드 인덱스
+        int len = recv(info->socket, (char*)&index, sizeof(index), 0);
+
+        if (len != sizeof(index))
+        {
+            printf("data corrupted : %ld bytes expected, %d bytes received\n", sizeof(index), len);
+            continue;
+        }
+
+        if (len <= 0)
+        {
+            perror("recv() failed");
+            continue;
+        }
+
+        count++;
+        // TODO: 선택된 카드 인덱스를 상대방 플레이어에게 전달
+        printf("Client: selected card index %d => %d\n", index, g_cards[index].id);
+
+        if (card1Idx == -1)
+            card1Idx = index;
+        else if (g_cards[card1Idx].id == g_cards[index].id)
+        {
+            // 카드가 일치하므로, 점수 증가
+            info->player.score++;
+            // TODO: 플레이어 점수 업데이트를 상대방 플레이어에게 전달
+            printf("+Points! => score: %d\n", info->player.score);
+        }
+    }
+
+    printf("======================================================================================================\n");
 }
 
 void PlayGame(LPVOID arg)
@@ -244,21 +300,16 @@ void PlayGame(LPVOID arg)
     ClientInfo* info = (ClientInfo*)arg;
     printf("%d: PlayGame\n", ntohs(info->addr.sin_port));
 
-    char message = START_GAME;
-    SendMessageToClient(info, message);
-    BroadcastCards();
-
     while (true)
     {
-        Sleep(1000);
-
         if (g_startGame == false)
             break;
         
         if (info->player.myTurn == false)
             continue;
-
-        printf("Test!\n");
+        
+        WaitForCardPick(info);
+        // TODO: 밑에 break를 지우고 플레이어 턴 전환
         break;
     }
 }
