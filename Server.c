@@ -1,9 +1,13 @@
+#define _CRT_NONSTDC_NO_DEPRECATE
+#define _CRT_SECURE_NO_WARNINGS
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
+
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <windows.h>
 #include <winsock2.h>
+#include <windows.h>
 #include <conio.h>
 #include <time.h>
 
@@ -23,11 +27,13 @@ typedef struct Card
 } Card;
 #pragma pack(pop)
 
+#pragma pack(push, 1) // 1바이트 정렬
 typedef struct Player
 {
     int score;
     bool myTurn;
 } Player;
+#pragma pack(pop)
 
 typedef struct ClientInfo
 {
@@ -141,7 +147,24 @@ void BroadcastCards()
     {
         if (g_clients[i])
         {
-            send(g_clients[i]->socket, (char*)g_cards, totalSize, 0);
+            send(g_clients[0]->socket, (char*)g_cards, totalSize, 0);
+        }
+    }
+}
+
+void BroadcastPlayerScore()
+{
+    int size = sizeof(Player);
+    int totalSize = size * g_clientCount;
+
+    printf("Brodcast Player Score\n");
+
+    for (int i = 0; i < g_clientCount; i++)
+    {
+        if (g_clients[i])
+        {
+            // TODO, For 최민규: 자기 자신의 점수만 업데이트 하고 있으므로, 상대방 플레이어 점수도 업데이트 하도록 수정 필요
+            send(g_clients[i]->socket, (char*)&g_clients[0]->player, totalSize, 0); // 클라이언트에 점수 보냄
         }
     }
 }
@@ -300,7 +323,7 @@ void WaitForCardPick(LPVOID arg)
         {
             // 카드가 일치하므로, 점수 증가
             info->player.score++;
-            // TODO: 플레이어 점수 업데이트를 상대방 플레이어에게 전달
+			BroadcastPlayerScore(); // 각 플레이어에게 점수 뿌림
             printf("+Points! => score: %d\n", info->player.score);
         }
     }
@@ -423,4 +446,6 @@ int main()
     Init();
     Connect();
     ShutdownServer();
+
+	return 0;
 }
