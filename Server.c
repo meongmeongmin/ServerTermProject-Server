@@ -1,11 +1,8 @@
-#define _CRT_NONSTDC_NO_DEPRECATE
-#define _CRT_SECURE_NO_WARNINGS
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
-
 #include <stdio.h>
 #include <stdbool.h>
-#include <winsock2.h>
 #include <windows.h>
+#include <winsock2.h>
 #include <conio.h>
 #include <time.h>
 
@@ -16,22 +13,20 @@
 #define START_GAME 'S'
 #define YOUR_TURN 'Y'
 
-#pragma pack(push, 1) // 1¹ÙÀÌÆ® Á¤·Ä
+#pragma pack(push, 1) // 1ë°”ì´íŠ¸ ì •ë ¬
 typedef struct Card
 {
     int id;
-    bool isFlip;    // Ä«µå°¡ µÚÁıÈù »óÅÂÀÎ°¡ (¾Õ¸éÀÎ°¡?)
-    bool isLock;    // ¸ÂÃá Ä«µåÀÎ°¡
+    bool isFlip;    // ì¹´ë“œê°€ ë’¤ì§‘íŒ ìƒíƒœì¸ê°€ (ì•ë©´ì¸ê°€?)
+    bool isLock;    // ë§ì¶˜ ì¹´ë“œì¸ê°€
 } Card;
 #pragma pack(pop)
 
-#pragma pack(push, 1)
 typedef struct Player
 {
     int score;
     bool myTurn;
 } Player;
-#pragma pack(pop)
 
 typedef struct ClientInfo
 {
@@ -44,7 +39,7 @@ SOCKET g_server_socket;
 ClientInfo* g_clients[MAX_CLIENTS];
 int g_clientCount = 0;
 
-volatile bool g_startGame = false;  // °ÔÀÓ ½ÃÀÛ ¿©ºÎ
+volatile bool g_startGame = false;  // ê²Œì„ ì‹œì‘ ì—¬ë¶€
 Card g_cards[MAX_CARD_COUNT];
 
 void ShutdownServer()
@@ -69,7 +64,7 @@ DWORD WINAPI WaitForShutdownServer(LPVOID arg)
 {
     while (true)
     {
-        // q ÀÔ·Â °¨Áö
+        // q ì…ë ¥ ê°ì§€
         if (kbhit() && getch() == 'q')
             break;
     }
@@ -78,7 +73,7 @@ DWORD WINAPI WaitForShutdownServer(LPVOID arg)
     return 0;
 }
 
-void Shuffle(int* ids)  // Ä«µå id ¼¯À½
+void Shuffle(int* ids)  // ì¹´ë“œ id ì„ìŒ
 {
     printf("Shuffle\n");
     int size = MAX_CARD_COUNT - 1;
@@ -94,21 +89,21 @@ void Shuffle(int* ids)  // Ä«µå id ¼¯À½
     }
 }
 
-void GenerateCards()    // Ä«µå id »ı¼º
+void GenerateCards()    // ì¹´ë“œ id ìƒì„±
 {
     printf("GenerateCards\n");
 
     int ids[MAX_CARD_COUNT];
     int count = MAX_CARD_COUNT / 2;
 
-    for (int i = 0; i < count; i++)
-    {
+    for (int i = 0; i < count; i++) 
+    { 
         ids[i * 2] = i;
         ids[i * 2 + 1] = i;
     }
 
     Shuffle(ids);
-
+    
     printf("Card id: ");
     for (int i = 0; i < MAX_CARD_COUNT; i++)
     {
@@ -148,29 +143,6 @@ void BroadcastCards()
     }
 }
 
-void BroadcastPlayerScore()
-{
-    int size = sizeof(Player);
-    int totalSize = size * g_clientCount;
-
-    Player players[MAX_CLIENTS];
-
-    for (int i = 0; i < g_clientCount; i++)
-    {
-        players[i] = g_clients[i]->player;
-    }
-
-    printf("Brodcast Player Score\n");
-
-    for (int i = 0; i < g_clientCount; i++)
-    {
-        if (g_clients[i])
-        {
-            send(g_clients[i]->socket, (const char*)players, totalSize, 0);
-        }
-    }
-}
-
 DWORD WINAPI WaitForGameStart(LPVOID arg)
 {
     printf("WaitForGameStart\n");
@@ -181,8 +153,8 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
 
         if (g_startGame)
             continue;
-
-        // ÀÎ¿øÀÌ 2¸í ¸ğ¿´´ÂÁö È®ÀÎ
+        
+        // ì¸ì›ì´ 2ëª… ëª¨ì˜€ëŠ”ì§€ í™•ì¸
         // if (g_clientCount != 2)
         // {
         //     g_startGame = false;
@@ -196,7 +168,6 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
             continue;
         }
 
-        // ÃÊ±â ¼³Á¤
         GenerateCards();
 
         char message = START_GAME;
@@ -205,9 +176,9 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
 
         Sleep(1000);
 
-        // ¸ÕÀú ½ÃÀÛÇÒ ÇÃ·¹ÀÌ¾î Á¤ÇÏ±â
+        // ë¨¼ì € ì‹œì‘í•  í”Œë ˆì´ì–´ ì •í•˜ê¸°
         // srand(time(NULL));
-        // int idx = rand() % MAX_CLIENTS; // (0 ~ 1) Á¤¼ö ¹üÀ§
+        // int idx = rand() % MAX_CLIENTS; // (0 ~ 1) ì •ìˆ˜ ë²”ìœ„
         // g_clients[idx]->player.myTurn = true;
 
         // Test
@@ -262,7 +233,7 @@ void Init()
 
     printf("Echo server running on port %d\n", PORT);
 
-    // ¼­¹ö ¼Ë´Ù¿î ´ë±â ½º·¹µå »ı¼º
+    // ì„œë²„ ì…§ë‹¤ìš´ ëŒ€ê¸° ìŠ¤ë ˆë“œ ìƒì„±
     HANDLE thread_id = CreateThread(NULL, 0, WaitForShutdownServer, NULL, 0, NULL);
     if (thread_id == NULL)
     {
@@ -270,7 +241,7 @@ void Init()
         ShutdownServer();
     }
 
-    // °ÔÀÓ ½ÃÀÛ ´ë±â ½º·¹µå »ı¼º
+    // ê²Œì„ ì‹œì‘ ëŒ€ê¸° ìŠ¤ë ˆë“œ ìƒì„±
     thread_id = CreateThread(NULL, 0, WaitForGameStart, NULL, 0, NULL);
     if (thread_id == NULL)
     {
@@ -283,15 +254,15 @@ void WaitForCardPick(LPVOID arg)
 {
     ClientInfo* info = (ClientInfo*)arg;
     int count = 0;
-    int card1Idx = -1;  // Ã¹¹øÂ°·Î °í¸¥ Ä«µå ÀÎµ¦½º
+    int card1Idx = -1;  // ì²«ë²ˆì§¸ë¡œ ê³ ë¥¸ ì¹´ë“œ ì¸ë±ìŠ¤
 
     printf("%d: WaitForCardPick\n", ntohs(info->addr.sin_port));
     printf("======================================================================================================\n");
-
-    // Ä«µå¸¦ µÎ ¹ø »ÌÀ» ¶§±îÁö ±â´Ù¸°´Ù
+    
+    // ì¹´ë“œë¥¼ ë‘ ë²ˆ ë½‘ì„ ë•Œê¹Œì§€ ê¸°ë‹¤ë¦°ë‹¤
     while (count < 2)
     {
-        int index;  // ¼±ÅÃÇÑ Ä«µå ÀÎµ¦½º
+        int index;  // ì„ íƒí•œ ì¹´ë“œ ì¸ë±ìŠ¤
         int len = recv(info->socket, (char*)&index, sizeof(index), 0);
 
         if (len != sizeof(index))
@@ -307,18 +278,16 @@ void WaitForCardPick(LPVOID arg)
         }
 
         count++;
-        // TODO: ¼±ÅÃµÈ Ä«µå ÀÎµ¦½º¸¦ »ó´ë¹æ ÇÃ·¹ÀÌ¾î¿¡°Ô Àü´Ş
+        // TODO: ì„ íƒëœ ì¹´ë“œ ì¸ë±ìŠ¤ë¥¼ ìƒëŒ€ë°© í”Œë ˆì´ì–´ì—ê²Œ ì „ë‹¬
         printf("Client: selected card index %d => %d\n", index, g_cards[index].id);
 
         if (card1Idx == -1)
             card1Idx = index;
         else if (g_cards[card1Idx].id == g_cards[index].id)
         {
-            // Ä«µå°¡ ÀÏÄ¡ÇÏ¹Ç·Î, Á¡¼ö Áõ°¡
+            // ì¹´ë“œê°€ ì¼ì¹˜í•˜ë¯€ë¡œ, ì ìˆ˜ ì¦ê°€
             info->player.score++;
-            // TODO: ÇÃ·¹ÀÌ¾î Á¡¼ö ¾÷µ¥ÀÌÆ®¸¦ »ó´ë¹æ ÇÃ·¹ÀÌ¾î¿¡°Ô Àü´Şs
-            BroadcastPlayerScore(); // ´ë±â, Send() µÎ¹ø
-
+            // TODO: í”Œë ˆì´ì–´ ì ìˆ˜ ì—…ë°ì´íŠ¸ë¥¼ ìƒëŒ€ë°© í”Œë ˆì´ì–´ì—ê²Œ ì „ë‹¬
             printf("+Points! => score: %d\n", info->player.score);
         }
     }
@@ -335,7 +304,7 @@ void PlayGame(LPVOID arg)
     {
         if (g_startGame == false)
             break;
-
+        
         if (info->player.myTurn == false)
             continue;
 
@@ -343,7 +312,7 @@ void PlayGame(LPVOID arg)
         send(info->socket, &msg, sizeof(msg), 0);
 
         WaitForCardPick(info);
-        // TODO: ¹Ø¿¡ break¸¦ Áö¿ì°í ÇÃ·¹ÀÌ¾î ÅÏ ÀüÈ¯
+        // TODO: ë°‘ì— breakë¥¼ ì§€ìš°ê³  í”Œë ˆì´ì–´ í„´ ì „í™˜
         break;
     }
 }
@@ -368,7 +337,7 @@ DWORD WINAPI HandleClient(LPVOID arg)
 
     char* msg = "Server connection successful!";
     send(info->socket, msg, strlen(msg), 0);
-
+    
     // Wait
     while (true)
     {
@@ -390,7 +359,7 @@ void Connect()
     int client_socket;
     DWORD threadId;
 
-    // ÃÊ±âÈ­µÈ ÇÃ·¹ÀÌ¾î ±âº» Á¤º¸
+    // ì´ˆê¸°í™”ëœ í”Œë ˆì´ì–´ ê¸°ë³¸ ì •ë³´
     Player p;
     p.myTurn = false;
     p.score = 0;
@@ -404,7 +373,7 @@ void Connect()
             continue;
         }
 
-        // ÀÎ¿ø µÎ ¸íÀ¸·Î Á¦ÇÑ
+        // ì¸ì› ë‘ ëª…ìœ¼ë¡œ ì œí•œ
         if (g_clientCount >= MAX_CLIENTS)
         {
             char* msg = "Sorry! Server full";
@@ -413,13 +382,13 @@ void Connect()
             continue;
         }
 
-        // ¿¬°áÇÑ Å¬¶óÀÌ¾ğÆ® Á¤º¸ µî·Ï
+        // ì—°ê²°í•œ í´ë¼ì´ì–¸íŠ¸ ì •ë³´ ë“±ë¡
         ClientInfo* ci = malloc(sizeof(ClientInfo));
         ci->socket = client_socket;
         ci->addr = client_addr;
         ci->player = p;
 
-        // Å¬¶óÀÌ¾ğÆ® ½º·¹µå »ı¼º
+        // í´ë¼ì´ì–¸íŠ¸ ìŠ¤ë ˆë“œ ìƒì„±
         HANDLE client_thread_id = CreateThread(NULL, 0, HandleClient, ci, 0, &threadId);
         if (client_thread_id == NULL)
         {
@@ -441,6 +410,4 @@ int main()
     Init();
     Connect();
     ShutdownServer();
-
-    return 0;
 }
