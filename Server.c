@@ -11,6 +11,7 @@
 #define MAX_CARD_COUNT 24
 
 #define START_GAME 'S'
+#define YOUR_TURN 'Y'
 
 #pragma pack(push, 1) // 1바이트 정렬
 typedef struct Card
@@ -183,7 +184,6 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
         // Test
         g_clients[0]->player.myTurn = true;
         g_startGame = true;
-
     }
 
     return 0;
@@ -307,7 +307,10 @@ void PlayGame(LPVOID arg)
         
         if (info->player.myTurn == false)
             continue;
-        
+
+        char msg = YOUR_TURN;
+        send(info->socket, &msg, sizeof(msg), 0);
+
         WaitForCardPick(info);
         // TODO: 밑에 break를 지우고 플레이어 턴 전환
         break;
