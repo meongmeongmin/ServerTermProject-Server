@@ -1,6 +1,7 @@
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #include <stdio.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include <windows.h>
 #include <winsock2.h>
 #include <conio.h>
@@ -75,8 +76,10 @@ DWORD WINAPI WaitForShutdownServer(LPVOID arg)
 
 void Shuffle(int* ids)  // 카드 id 섞음
 {
-    printf("Shuffle\n");
+    srand(time(NULL));
     int size = MAX_CARD_COUNT - 1;
+
+    printf("Shuffle\n");
 
     for (int i = size; i > 0; i--)
     {
@@ -138,7 +141,7 @@ void BroadcastCards()
     {
         if (g_clients[i])
         {
-            send(g_clients[i]->socket, (const char*)g_cards, totalSize, 0);
+            send(g_clients[i]->socket, (char*)g_cards, totalSize, 0);
         }
     }
 }
@@ -154,14 +157,18 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
         if (g_startGame)
             continue;
         
+        /* TODO, For 최민규: 
+            - 주석 처리된 "인원이 2명 모였는지 확인"과 "먼저 시작할 플레이어 정하기"을 활성화(주석 해제)
+            - "Test (1인 테스트용, TODO: 2인 테스트 할 때 주석 처리 필요)" 주석이 있는 코드는 모두 주석 처리(Ctrl + /) */
+        
         // 인원이 2명 모였는지 확인
         // if (g_clientCount != 2)
         // {
         //     g_startGame = false;
         //     continue;
         // }
-
-        // Test
+        
+        // Test (1인 테스트용, TODO: 2인 테스트 할 때 주석 처리 필요)
         if (g_clientCount <= 0)
         {
             g_startGame = false;
@@ -177,12 +184,11 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
         Sleep(1000);
 
         // 먼저 시작할 플레이어 정하기
-        // srand(time(NULL));
         // int idx = rand() % MAX_CLIENTS; // (0 ~ 1) 정수 범위
         // g_clients[idx]->player.myTurn = true;
 
-        // Test
-        g_clients[0]->player.myTurn = true;
+        g_clients[0]->player.myTurn = true; // Test (1인 테스트용, TODO: 2인 테스트 할 때 주석 처리 필요)
+        
         g_startGame = true;
     }
 
@@ -191,8 +197,6 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
 
 void Init()
 {
-    srand(time(NULL));
-
     WSADATA wsa;
     printf("Initializing Winsock...\n");
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
@@ -250,6 +254,26 @@ void Init()
     }
 }
 
+bool IsRecvSuccess(LPVOID arg, void* data, int size)
+{
+    ClientInfo* info = (ClientInfo*)arg;
+    int len = recv(info->socket, data, size, 0);
+
+    if (len != size)
+    {
+        printf("data corrupted : %ld bytes expected, %d bytes received\n", size, len);
+        return false;
+    }
+
+    if (len <= 0)
+    {
+        perror("recv() failed");
+        return false;
+    }
+
+    return true;
+}
+
 void WaitForCardPick(LPVOID arg)
 {
     ClientInfo* info = (ClientInfo*)arg;
@@ -263,19 +287,8 @@ void WaitForCardPick(LPVOID arg)
     while (count < 2)
     {
         int index;  // 선택한 카드 인덱스
-        int len = recv(info->socket, (char*)&index, sizeof(index), 0);
-
-        if (len != sizeof(index))
-        {
-            printf("data corrupted : %ld bytes expected, %d bytes received\n", sizeof(index), len);
+        if (IsRecvSuccess(info, &index, sizeof(index)) == false)
             continue;
-        }
-
-        if (len <= 0)
-        {
-            perror("recv() failed");
-            continue;
-        }
 
         count++;
         // TODO: 선택된 카드 인덱스를 상대방 플레이어에게 전달
@@ -312,7 +325,7 @@ void PlayGame(LPVOID arg)
         send(info->socket, &msg, sizeof(msg), 0);
 
         WaitForCardPick(info);
-        // TODO: 밑에 break를 지우고 플레이어 턴 전환
+        // TODO, For 최민규: 밑에 break를 지우고 플레이어 턴 전환
         break;
     }
 }
