@@ -209,8 +209,11 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
         // int idx = rand() % MAX_CLIENTS; // (0 ~ 1) 정수 범위
         // g_clients[idx]->player.myTurn = true;
 
-        g_clients[0]->player.myTurn = true; // Test (1인 테스트용, TODO: 2인 테스트 할 때 주석 처리 필요)
-        
+        // Test (1인 테스트용, TODO: 2인 테스트 할 때 주석 처리 필요)
+        {
+            g_clients[0]->player.myTurn = true;
+        }
+
         g_startGame = true;
     }
 
@@ -318,6 +321,7 @@ void WaitForCardPick(LPVOID arg)
 
         if (card1Idx == -1)
             card1Idx = index;
+
         else if (g_cards[card1Idx].id == g_cards[index].id)
         {
             // 카드가 일치하므로, 점수 증가
@@ -328,6 +332,24 @@ void WaitForCardPick(LPVOID arg)
     }
 
     printf("======================================================================================================\n");
+}
+
+void SwitchTurn()
+{
+    printf("SwitchTurn\n");
+
+    if (g_clients[0]->player.myTurn == true)
+    {
+        g_clients[0]->player.myTurn = false;
+        // TODO, For 최민규: 2인으로 플레이어가 가능하면 아래에 주석 처리된 코드를 활성화
+        // g_clients[1]->player.myTurn = true;
+    }
+    else
+    {
+        g_clients[1]->player.myTurn = false;
+        // TODO, For 최민규: 2인으로 플레이어가 가능하면 아래에 주석 처리된 코드를 활성화
+        // g_clients[0]->player.myTurn = true;
+    }
 }
 
 void PlayGame(LPVOID arg)
@@ -347,7 +369,8 @@ void PlayGame(LPVOID arg)
         send(info->socket, &msg, sizeof(msg), 0);
 
         WaitForCardPick(info);
-        // TODO, For 최민규: 밑에 break를 지우고 플레이어 턴 전환
+        SwitchTurn();
+        // TODO, For 최민규: 밑에 break 지우기
         break;
     }
 }
