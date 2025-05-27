@@ -16,6 +16,8 @@
 
 #define START_GAME 'S'
 #define YOUR_TURN 'Y'
+#define PICK_CARD 'P'
+#define EXIT 'E'
 
 #pragma pack(push, 1) // 1바이트 정렬
 typedef struct Card
@@ -77,6 +79,19 @@ DWORD WINAPI WaitForShutdownServer(LPVOID arg)
 
     ShutdownServer();
     return 0;
+}
+
+void ExitGame(LPVOID arg)
+{
+    ClientInfo* info = (ClientInfo*)arg;
+    printf("%d: ExitGame\n", ntohs(info->addr.sin_port));
+
+    g_clientCount--;
+    g_startGame = false;
+
+    closesocket(info->socket);
+    free(info);
+    ExitThread(0);
 }
 
 void Shuffle(int* ids)  // 카드 id 섞음
@@ -282,18 +297,19 @@ void Init()
 bool IsRecvSuccess(LPVOID arg, void* data, int size)
 {
     ClientInfo* info = (ClientInfo*)arg;
-    int len = recv(info->socket, data, size, 0);
+    int total = 0;
+    char* ptr = (char*)data;
 
-    if (len != size)
+    while (total < size)
     {
-        printf("data corrupted : %ld bytes expected, %d bytes received\n", size, len);
-        return false;
-    }
+        int len = recv(info->socket, ptr + total, size - total, 0);
+        if (len <= 0)
+        {
+            perror("recv() failed");
+            return false;
+        }
 
-    if (len <= 0)
-    {
-        perror("recv() failed");
-        return false;
+        total += len;
     }
 
     return true;
@@ -311,13 +327,37 @@ void WaitForCardPick(LPVOID arg)
     // 카드를 두 번 뽑을 때까지 기다린다
     while (count < 2)
     {
+        #pragma region Client 신호(메시지)를 기다린다
+        while (true)
+        {
+            char msg;
+            if (IsRecvSuccess(info, &msg, sizeof(msg)) == false)
+                continue;
+
+            if (msg == PICK_CARD)
+            {
+                printf("Client: PICK CARD\n");
+                break;
+            }
+            
+            if (msg == EXIT)
+            {
+                printf("Client: EXIT\n");
+                printf("======================================================================================================\n");
+                ExitGame(info);
+                Sleep(1000);
+                return;
+            }
+        }
+        #pragma endregion
+
         int index;  // 선택한 카드 인덱스
         if (IsRecvSuccess(info, &index, sizeof(index)) == false)
             continue;
 
         count++;
         // TODO: 선택된 카드 인덱스를 상대방 플레이어에게 전달
-        printf("Client: selected card index %d => %d\n", index, g_cards[index].id);
+        printf("Client: selected card index %d (id: %d)\n", index, g_cards[index].id);
 
         if (card1Idx == -1)
             card1Idx = index;
@@ -373,19 +413,6 @@ void PlayGame(LPVOID arg)
         // TODO, For 최민규: 밑에 break 지우기
         break;
     }
-}
-
-void ExitGame(LPVOID arg)
-{
-    ClientInfo* info = (ClientInfo*)arg;
-    printf("%d: ExitGame\n", ntohs(info->addr.sin_port));
-
-    g_clientCount--;
-    g_startGame = false;
-
-    closesocket(info->socket);
-    free(info);
-    ExitThread(0);
 }
 
 DWORD WINAPI HandleClient(LPVOID arg)
