@@ -241,7 +241,6 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
         }
 
         g_startGame = true;
-        SetEvent(g_eventStartGame);
     }
 
     return 0;
@@ -425,7 +424,12 @@ DWORD WINAPI HandleClient(LPVOID arg)
 
         if (msg == START_GAME)
         {
-            WaitForSingleObject(g_eventStartGame, INFINITE);
+            while (true)
+            {
+                if (g_startGame)
+                    break;
+            }
+
             printf("Client(%d): Start Game!\n", ntohs(info->addr.sin_port));
             break;
         }
