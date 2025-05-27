@@ -48,6 +48,7 @@ ClientInfo* g_clients[MAX_CLIENTS];
 int g_clientCount = 0;
 
 volatile bool g_startGame = false;  // 게임 시작 여부
+HANDLE g_eventStartGame;    // CPU 점유 방지
 Card g_cards[MAX_CARD_COUNT];
 
 void ShutdownServer()
@@ -65,6 +66,7 @@ void ShutdownServer()
 
     closesocket(g_server_socket);
     WSACleanup();
+    CloseHandle(g_eventStartGame);
     exit(0);
 }
 
@@ -79,6 +81,27 @@ DWORD WINAPI WaitForShutdownServer(LPVOID arg)
 
     ShutdownServer();
     return 0;
+}
+
+bool IsRecvSuccess(LPVOID arg, void* data, int size)
+{
+    ClientInfo* info = (ClientInfo*)arg;
+    int total = 0;
+    char* ptr = (char*)data;
+
+    while (total < size)
+    {
+        int len = recv(info->socket, ptr + total, size - total, 0);
+        if (len <= 0)
+        {
+            perror("recv() failed");
+            return false;
+        }
+
+        total += len;
+    }
+
+    return true;
 }
 
 void ExitGame(LPVOID arg)
@@ -189,8 +212,6 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
 
     while (true)
     {
-        Sleep(1000);
-
         if (g_startGame)
             continue;
         
@@ -198,20 +219,10 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
             - 주석 처리된 "인원이 2명 모였는지 확인"과 "먼저 시작할 플레이어 정하기"을 활성화(주석 해제)
             - "Test (1인 테스트용, TODO: 2인 테스트 할 때 주석 처리 필요)" 주석이 있는 코드는 모두 주석 처리(Ctrl + /) */
         
-        // 인원이 2명 모였는지 확인
-        // if (g_clientCount != 2)
-        // {
-        //     g_startGame = false;
-        //     continue;
-        // }
-        
-        // Test (1인 테스트용, TODO: 2인 테스트 할 때 주석 처리 필요)
-        if (g_clientCount <= 0)
-        {
-            g_startGame = false;
-            continue;
-        }
+        // 인원이 모두 모였는지 확인
+        WaitForSingleObject(g_eventStartGame, INFINITE);
 
+        ResetEvent(g_eventStartGame);   // 다시 잠금
         GenerateCards();
 
         char message = START_GAME;
@@ -230,6 +241,7 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
         }
 
         g_startGame = true;
+        SetEvent(g_eventStartGame);
     }
 
     return 0;
@@ -285,6 +297,8 @@ void Init()
         ShutdownServer();
     }
 
+    g_eventStartGame = CreateEvent(NULL, TRUE, FALSE, NULL);
+
     // 게임 시작 대기 스레드 생성
     thread_id = CreateThread(NULL, 0, WaitForGameStart, NULL, 0, NULL);
     if (thread_id == NULL)
@@ -292,27 +306,6 @@ void Init()
         perror("CreateThread() failed");
         ShutdownServer();
     }
-}
-
-bool IsRecvSuccess(LPVOID arg, void* data, int size)
-{
-    ClientInfo* info = (ClientInfo*)arg;
-    int total = 0;
-    char* ptr = (char*)data;
-
-    while (total < size)
-    {
-        int len = recv(info->socket, ptr + total, size - total, 0);
-        if (len <= 0)
-        {
-            perror("recv() failed");
-            return false;
-        }
-
-        total += len;
-    }
-
-    return true;
 }
 
 void WaitForCardPick(LPVOID arg)
@@ -332,7 +325,7 @@ void WaitForCardPick(LPVOID arg)
         {
             char msg;
             if (IsRecvSuccess(info, &msg, sizeof(msg)) == false)
-                continue;
+                ExitGame(info);
 
             if (msg == PICK_CARD)
             {
@@ -344,8 +337,8 @@ void WaitForCardPick(LPVOID arg)
             {
                 printf("Client: EXIT\n");
                 printf("======================================================================================================\n");
+
                 ExitGame(info);
-                Sleep(1000);
                 return;
             }
         }
@@ -353,7 +346,7 @@ void WaitForCardPick(LPVOID arg)
 
         int index;  // 선택한 카드 인덱스
         if (IsRecvSuccess(info, &index, sizeof(index)) == false)
-            continue;
+            ExitGame(info);
 
         count++;
         // TODO: 선택된 카드 인덱스를 상대방 플레이어에게 전달
@@ -420,16 +413,27 @@ DWORD WINAPI HandleClient(LPVOID arg)
     ClientInfo* info = (ClientInfo*)arg;
     printf("Connected from %s: %d\n", inet_ntoa(info->addr.sin_addr), ntohs(info->addr.sin_port));
 
-    char* msg = "Server connection successful!";
-    send(info->socket, msg, strlen(msg), 0);
-    
+    char* message = "Server connection successful!";
+    send(info->socket, message, strlen(message), 0);
+
     // Wait
     while (true)
     {
-        if (g_startGame)
+        char msg;
+        if (IsRecvSuccess(info, &msg, sizeof(msg)) == false)
+            ExitGame(info);
+
+        if (msg == START_GAME)
         {
-            printf("%d: Start Game!\n", ntohs(info->addr.sin_port));
+            WaitForSingleObject(g_eventStartGame, INFINITE);
+            printf("Client(%d): Start Game!\n", ntohs(info->addr.sin_port));
             break;
+        }
+
+        if (msg == EXIT)
+        {
+            printf("Client(%d): EXIT\n", ntohs(info->addr.sin_port));
+            ExitGame(info);
         }
     }
 
@@ -487,6 +491,14 @@ void Connect()
 
         CloseHandle(client_thread_id);
         g_clients[g_clientCount++] = ci;
+
+        // 인원이 2명 모였는지 확인
+        // if (g_clientCount == MAX_CLIENTS)
+        //     SetEvent(g_eventStartGame);  // 잠금 해제
+
+        // Test (1인 테스트용, TODO: 2인 테스트 할 때 주석 처리 필요)
+        if (g_clientCount > 0)
+            SetEvent(g_eventStartGame); // 잠금 해제
     }
 }
 
