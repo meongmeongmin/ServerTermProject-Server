@@ -48,9 +48,12 @@ ClientInfo* g_clients[MAX_CLIENTS];
 int g_clientCount = 0;
 
 volatile bool g_startGame = false;  // 게임 시작 여부
-HANDLE g_eventStartGame;    // CPU 점유 방지
 Card g_cards[MAX_CARD_COUNT];
 
+// CPU 점유 방지
+HANDLE g_eventReadyGame;    // 게임 시작 전 준비(카드 배치) 
+
+#pragma region ShutdownServer
 void ShutdownServer()
 {
     printf("Shutting down server...\n");
@@ -66,7 +69,7 @@ void ShutdownServer()
 
     closesocket(g_server_socket);
     WSACleanup();
-    CloseHandle(g_eventStartGame);
+    CloseHandle(g_eventReadyGame);
     exit(0);
 }
 
@@ -82,7 +85,9 @@ DWORD WINAPI WaitForShutdownServer(LPVOID arg)
     ShutdownServer();
     return 0;
 }
+#pragma endregion
 
+#pragma region Util
 bool IsRecvSuccess(LPVOID arg, void* data, int size)
 {
     ClientInfo* info = (ClientInfo*)arg;
@@ -104,18 +109,49 @@ bool IsRecvSuccess(LPVOID arg, void* data, int size)
     return true;
 }
 
-void ExitGame(LPVOID arg)
+void BroadcastMessage(char msg)
 {
-    ClientInfo* info = (ClientInfo*)arg;
-    printf("%d: ExitGame\n", ntohs(info->addr.sin_port));
+    printf("BroadcastMessage\n");
 
-    g_clientCount--;
-    g_startGame = false;
-
-    closesocket(info->socket);
-    free(info);
-    ExitThread(0);
+    for (int i = 0; i < g_clientCount; i++)
+    {
+        if (g_clients[i])
+            send(g_clients[i]->socket, &msg, sizeof(msg), 0);
+    }
 }
+
+void BroadcastCards()
+{
+    int size = sizeof(Card);
+    int totalSize = size * MAX_CARD_COUNT;
+    printf("BroadcastCards\n");
+
+    for (int i = 0; i < g_clientCount; i++)
+    {
+        if (g_clients[i])
+        {
+            send(g_clients[0]->socket, (char*)g_cards, totalSize, 0);
+        }
+    }
+}
+
+void BroadcastPlayerScore()
+{
+    int size = sizeof(Player);
+    int totalSize = size * g_clientCount;
+
+    printf("Brodcast Player Score\n");
+
+    for (int i = 0; i < g_clientCount; i++)
+    {
+        if (g_clients[i])
+        {
+            // TODO, For 최민규: 자기 자신의 점수만 업데이트 하고 있으므로, 상대방 플레이어 점수도 업데이트 하도록 수정 필요
+            send(g_clients[i]->socket, (char*)&g_clients[0]->player, totalSize, 0); // 클라이언트에 점수 보냄
+        }
+    }
+}
+#pragma endregion
 
 void Shuffle(int* ids)  // 카드 id 섞음
 {
@@ -163,52 +199,9 @@ void GenerateCards()    // 카드 id 생성
     printf("\n");
 }
 
-void BroadcastMessage(char msg)
-{
-    printf("BroadcastMessage\n");
-
-    for (int i = 0; i < g_clientCount; i++)
-    {
-        if (g_clients[i])
-            send(g_clients[i]->socket, &msg, sizeof(msg), 0);
-    }
-}
-
-void BroadcastCards()
-{
-    int size = sizeof(Card);
-    int totalSize = size * MAX_CARD_COUNT;
-    printf("BroadcastCards\n");
-
-    for (int i = 0; i < g_clientCount; i++)
-    {
-        if (g_clients[i])
-        {
-            send(g_clients[0]->socket, (char*)g_cards, totalSize, 0);
-        }
-    }
-}
-
-void BroadcastPlayerScore()
-{
-    int size = sizeof(Player);
-    int totalSize = size * g_clientCount;
-
-    printf("Brodcast Player Score\n");
-
-    for (int i = 0; i < g_clientCount; i++)
-    {
-        if (g_clients[i])
-        {
-            // TODO, For 최민규: 자기 자신의 점수만 업데이트 하고 있으므로, 상대방 플레이어 점수도 업데이트 하도록 수정 필요
-            send(g_clients[i]->socket, (char*)&g_clients[0]->player, totalSize, 0); // 클라이언트에 점수 보냄
-        }
-    }
-}
-
 DWORD WINAPI WaitForGameStart(LPVOID arg)
 {
-    printf("WaitForGameStart\n");
+    printf("WaitForGameStart\n\n");
 
     while (true)
     {
@@ -220,9 +213,9 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
             - "Test (1인 테스트용, TODO: 2인 테스트 할 때 주석 처리 필요)" 주석이 있는 코드는 모두 주석 처리(Ctrl + /) */
         
         // 인원이 모두 모였는지 확인
-        WaitForSingleObject(g_eventStartGame, INFINITE);
+        WaitForSingleObject(g_eventReadyGame, INFINITE);
 
-        ResetEvent(g_eventStartGame);   // 다시 잠금
+        ResetEvent(g_eventReadyGame);   // 다시 잠금
         GenerateCards();
 
         char message = START_GAME;
@@ -236,9 +229,7 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
         // g_clients[idx]->player.myTurn = true;
 
         // Test (1인 테스트용, TODO: 2인 테스트 할 때 주석 처리 필요)
-        {
-            g_clients[0]->player.myTurn = true;
-        }
+        g_clients[0]->player.myTurn = true;
 
         g_startGame = true;
     }
@@ -246,64 +237,35 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
     return 0;
 }
 
-void Init()
+void ExitGame(LPVOID arg)
 {
-    WSADATA wsa;
-    printf("Initializing Winsock...\n");
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
-    {
-        printf("WSAStartup failed. Error Code : %d\n", WSAGetLastError());
+    ClientInfo* info = (ClientInfo*)arg;
+    printf("%d: ExitGame\n\n", ntohs(info->addr.sin_port));
+
+    g_clientCount--;
+    g_startGame = false;
+
+    closesocket(info->socket);
+    free(info);
+    ExitThread(0);
+}
+
+void WaitForClientMessage(LPVOID arg, const char MESSAGE)   // 신호(메시지)를 기다린다
+{
+    ClientInfo* info = (ClientInfo*)arg;
+    
+    char msg;
+    if (IsRecvSuccess(info, &msg, sizeof(msg)) == false)
+        ExitGame(info);
+    
+    if (msg == MESSAGE)
         return;
-    }
-
-    // socket
-    g_server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (g_server_socket == INVALID_SOCKET)
+    
+    if (msg == EXIT)
     {
-        printf("socket() failed : %d\n", WSAGetLastError());
+        printf("Client: EXIT\n");
+        ExitGame(info);
         return;
-    }
-
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(PORT);
-
-    // bind
-    int b = bind(g_server_socket, (struct sockaddr*)&server_addr, sizeof(server_addr));
-    if (b == SOCKET_ERROR)
-    {
-        printf("bind() failed : %d\n", WSAGetLastError());
-        return;
-    }
-
-    // listen
-    int r = listen(g_server_socket, MAX_CLIENTS);
-    if (r == SOCKET_ERROR)
-    {
-        printf("listen() failed : %d\n", WSAGetLastError());
-        return;
-    }
-
-    printf("Echo server running on port %d\n", PORT);
-
-    // 서버 셧다운 대기 스레드 생성
-    HANDLE thread_id = CreateThread(NULL, 0, WaitForShutdownServer, NULL, 0, NULL);
-    if (thread_id == NULL)
-    {
-        perror("CreateThread() failed");
-        ShutdownServer();
-    }
-
-    g_eventStartGame = CreateEvent(NULL, TRUE, FALSE, NULL);
-
-    // 게임 시작 대기 스레드 생성
-    thread_id = CreateThread(NULL, 0, WaitForGameStart, NULL, 0, NULL);
-    if (thread_id == NULL)
-    {
-        perror("CreateThread() failed");
-        ShutdownServer();
     }
 }
 
@@ -319,29 +281,7 @@ void WaitForCardPick(LPVOID arg)
     // 카드를 두 번 뽑을 때까지 기다린다
     while (count < 2)
     {
-        #pragma region Client 신호(메시지)를 기다린다
-        while (true)
-        {
-            char msg;
-            if (IsRecvSuccess(info, &msg, sizeof(msg)) == false)
-                ExitGame(info);
-
-            if (msg == PICK_CARD)
-            {
-                printf("Client: PICK CARD\n");
-                break;
-            }
-            
-            if (msg == EXIT)
-            {
-                printf("Client: EXIT\n");
-                printf("======================================================================================================\n");
-
-                ExitGame(info);
-                return;
-            }
-        }
-        #pragma endregion
+        WaitForClientMessage(info, PICK_CARD);
 
         int index;  // 선택한 카드 인덱스
         if (IsRecvSuccess(info, &index, sizeof(index)) == false)
@@ -410,39 +350,92 @@ void PlayGame(LPVOID arg)
 DWORD WINAPI HandleClient(LPVOID arg)
 {
     ClientInfo* info = (ClientInfo*)arg;
-    printf("Connected from %s: %d\n", inet_ntoa(info->addr.sin_addr), ntohs(info->addr.sin_port));
+    printf("\nConnected from %s: %d\n", inet_ntoa(info->addr.sin_addr), ntohs(info->addr.sin_port));
 
     char* message = "Server connection successful!";
     send(info->socket, message, strlen(message), 0);
 
+    Sleep(1000);
+
+    // 인원이 2명 모였는지 확인
+    // if (g_clientCount == MAX_CLIENTS)
+    //     SetEvent(g_eventReadyGame);  // 잠금 해제
+
+    // Test (1인 테스트용, TODO: 2인 테스트 할 때 주석 처리 필요)
+    if (g_clientCount > 0)
+        SetEvent(g_eventReadyGame); // 잠금 해제
+
     // Wait
+    WaitForClientMessage(info, START_GAME);
     while (true)
     {
-        char msg;
-        if (IsRecvSuccess(info, &msg, sizeof(msg)) == false)
-            ExitGame(info);
-
-        if (msg == START_GAME)
-        {
-            while (true)
-            {
-                if (g_startGame)
-                    break;
-            }
-
-            printf("Client(%d): Start Game!\n", ntohs(info->addr.sin_port));
+        if (g_startGame)
             break;
-        }
-
-        if (msg == EXIT)
-        {
-            printf("Client(%d): EXIT\n", ntohs(info->addr.sin_port));
-            ExitGame(info);
-        }
     }
 
     PlayGame(info);
     ExitGame(info);
+}
+
+void Init()
+{
+    WSADATA wsa;
+    printf("Initializing Winsock...\n");
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
+    {
+        printf("WSAStartup failed. Error Code : %d\n", WSAGetLastError());
+        return;
+    }
+
+    // socket
+    g_server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (g_server_socket == INVALID_SOCKET)
+    {
+        printf("socket() failed : %d\n", WSAGetLastError());
+        return;
+    }
+
+    struct sockaddr_in server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(PORT);
+
+    // bind
+    int b = bind(g_server_socket, (struct sockaddr*)&server_addr, sizeof(server_addr));
+    if (b == SOCKET_ERROR)
+    {
+        printf("bind() failed : %d\n", WSAGetLastError());
+        return;
+    }
+
+    // listen
+    int r = listen(g_server_socket, MAX_CLIENTS);
+    if (r == SOCKET_ERROR)
+    {
+        printf("listen() failed : %d\n", WSAGetLastError());
+        return;
+    }
+
+    printf("Echo server running on port %d\n", PORT);
+
+    // 서버 셧다운 대기 스레드 생성
+    HANDLE thread_id = CreateThread(NULL, 0, WaitForShutdownServer, NULL, 0, NULL);
+    if (thread_id == NULL)
+    {
+        perror("CreateThread() failed");
+        ShutdownServer();
+    }
+
+    g_eventReadyGame = CreateEvent(NULL, TRUE, FALSE, NULL);
+
+    // 게임 시작 대기 스레드 생성
+    thread_id = CreateThread(NULL, 0, WaitForGameStart, NULL, 0, NULL);
+    if (thread_id == NULL)
+    {
+        perror("CreateThread() failed");
+        ShutdownServer();
+    }
 }
 
 void Connect()
@@ -495,14 +488,6 @@ void Connect()
 
         CloseHandle(client_thread_id);
         g_clients[g_clientCount++] = ci;
-
-        // 인원이 2명 모였는지 확인
-        // if (g_clientCount == MAX_CLIENTS)
-        //     SetEvent(g_eventStartGame);  // 잠금 해제
-
-        // Test (1인 테스트용, TODO: 2인 테스트 할 때 주석 처리 필요)
-        if (g_clientCount > 0)
-            SetEvent(g_eventStartGame); // 잠금 해제
     }
 }
 
