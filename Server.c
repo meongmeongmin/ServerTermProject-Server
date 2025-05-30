@@ -49,10 +49,14 @@ ClientInfo* g_clients[MAX_CLIENTS];
 int g_clientCount = 0;
 
 volatile bool g_startGame = false;  // 게임 시작 여부
+volatile bool g_readyToStartTurn = false;   // 다음 턴 시작 가능 여부
+
+ClientInfo* g_nextClient;   // 다음 차례 클라이언트
 Card g_cards[MAX_CARD_COUNT];
 
 // CPU 점유 방지
-HANDLE g_eventReadyGame;    // 게임 시작 전 준비(카드 배치) 
+HANDLE g_readyGameEvent;    // 게임 시작 전 준비(카드 배치)
+HANDLE g_startGameEvent;    // 게임 시작 가능
 
 #pragma region ShutdownServer
 void ShutdownServer()
@@ -70,7 +74,8 @@ void ShutdownServer()
 
     closesocket(g_server_socket);
     WSACleanup();
-    CloseHandle(g_eventReadyGame);
+    CloseHandle(g_readyGameEvent);
+    CloseHandle(g_startGameEvent);
     exit(0);
 }
 
@@ -106,12 +111,10 @@ bool IsRecvSuccess(LPVOID arg, void* data, int size)
 
         total += len;
     }
-	ptr = NULL;
 
+	ptr = NULL;
     return true;
 }
-
-void SwitchTurn();
 
 void BroadcastMessage(char msg)
 {
@@ -157,6 +160,7 @@ void BroadcastPlayerInfo()
 }
 #pragma endregion
 
+#pragma region Card
 void Shuffle(int* ids)  // 카드 id 섞음
 {
     srand(time(NULL));
@@ -202,6 +206,7 @@ void GenerateCards()    // 카드 id 생성
 
     printf("\n");
 }
+#pragma endregion
 
 DWORD WINAPI WaitForGameStart(LPVOID arg) // 클라이언트 접속 전에 먼저 호출
 {
@@ -213,23 +218,29 @@ DWORD WINAPI WaitForGameStart(LPVOID arg) // 클라이언트 접속 전에 먼�
             continue;
         
         // 인원이 모두 모였는지 확인, 인원이 모두 모일때까지 무한대로 기다림, 해당 이벤트가 signal상태가 될때까지 대기, 서버 시작시 여기서 대기하게 됨. -> WaitForGameStart
-        WaitForSingleObject(g_eventReadyGame, INFINITE);
+        WaitForSingleObject(g_readyGameEvent, INFINITE);
 
-        ResetEvent(g_eventReadyGame);   // 다시 잠금, non_signal
+        ResetEvent(g_readyGameEvent);   // 다시 잠금, non_signal
         GenerateCards(); // 카드 생성
 
         char message = START_GAME; // 게임 시작 메시지 브로드캐스트
         BroadcastMessage(message);
-
-        Sleep(1000);
 		BroadcastCards();
 
         // 먼저 시작할 플레이어 정하기
+        srand(time(NULL));
        	int idx = rand() % MAX_CLIENTS; // (0 ~ 1) 정수 범위
         g_clients[idx]->player.myTurn = true;
+        
+        // 다음 차례 클라이언트 설정
+        if (idx != 0)
+            g_nextClient = g_clients[0];
+        else
+            g_nextClient = g_clients[1];
 
         g_startGame = true;
-		printf("GameStart : %d\n", g_startGame); 
+        Sleep(1000);
+        SetEvent(g_startGameEvent);
     }
 
     return 0;
@@ -242,6 +253,9 @@ void ExitGame(LPVOID arg)
 
     g_clientCount--;
     g_startGame = false;
+    ResetEvent(g_startGameEvent);
+    
+    g_nextClient = NULL;
 
     closesocket(info->socket);
     free(info);
@@ -269,18 +283,49 @@ void WaitForClientMessage(LPVOID arg, const char MESSAGE)   // 신호(메시지)
     }
 }
 
+// 모든 플레이어의 동기화를 기다린다. (플레이 화면)
+void WaitForSync()
+{
+
+}
+
+void SwitchTurn()
+{
+    printf("SwitchTurn");
+	
+    if (g_clients[0]->player.myTurn == true)
+    {
+		printf(": client2(%d)\n", ntohs(g_clients[1]->addr.sin_port));
+        g_clients[0]->player.myTurn = false;
+        g_clients[1]->player.myTurn = true;
+
+        g_nextClient = g_clients[0];
+    }
+    else
+    {
+		printf(": client1(%d)\n", ntohs(g_clients[0]->addr.sin_port));
+        g_clients[1]->player.myTurn = false;
+        g_clients[0]->player.myTurn = true;
+
+        g_nextClient = g_clients[1];
+    }
+}
+
 void WaitForCardPick(LPVOID arg)
 {
     ClientInfo* info = (ClientInfo*)arg;
     int count = 0;
-    int card1Idx = -1;
+    int card1 = -1;
+    int card2 = -1;
 
     printf("%d: WaitForCardPick\n", ntohs(info->addr.sin_port));
     printf("======================================================================================================\n");
     
-    while (count < 2)
+    // 카드가 짝이 아닐 때까지 계속 자기 차례이다.
+    while (info->player.myTurn)
     {
-        WaitForClientMessage(info, PICK_CARD);
+        char msg = PICK_CARD;
+        WaitForClientMessage(info, msg);
 
         char index;
         if (IsRecvSuccess(info, &index, sizeof(index)) == false)
@@ -293,49 +338,41 @@ void WaitForCardPick(LPVOID arg)
             return;
         }
 
-        printf("PICK CARD COUNT : %d\n", count + 1);
         printf("Client: selected card index %d (id: %d)\n", index, g_cards[index].id);
 
-        if (count == 0)
+        // 상대방 플레이어에게도 전달
+        printf("%d: Send Card\n", ntohs(info->addr.sin_port));
+        send(g_nextClient->socket, (char*)&msg, sizeof(msg), 0);
+        send(g_nextClient->socket, (char*)&index, sizeof(index), 0);
+
+        if (card1 == -1)
+            card1 = g_cards[index].id;
+        else 
+            card2 = g_cards[index].id;
+
+        // 카드를 두 장 뽑았는지 확인
+        if (++count == 2)
         {
-            card1Idx = index;
-        }
-        else
-        {
-            if (card1Idx != index && g_cards[card1Idx].id == g_cards[index].id)
+            printf("Two Pick Card\n");
+            
+            if (card1 == card2)
             {
                 info->player.score++;
                 printf("+Points! => score: %d\n", info->player.score);
-                BroadcastPlayerInfo();
+                //BroadcastPlayerInfo();
+
+                card1 = -1;
+                card2 = -1;
+            }
+            else
+            {
+                SwitchTurn();
+                break;
             }
         }
-
-        count++;
     }
-
-    // 턴 전환은 카드 2장 고른 후에만 발생
-	printf("Two Pick Card\n");
-    SwitchTurn();
 
     printf("======================================================================================================\n");
-}
-
-void SwitchTurn() // 반복문에서 과도하게 호출되는 문제 있음
-{
-    printf("SwitchTurn\n");
-	
-    if (g_clients[0]->player.myTurn == true)
-    {
-        g_clients[0]->player.myTurn = false;
-		printf("client2\n");
-        g_clients[1]->player.myTurn = true;
-    }
-    else
-    {
-        g_clients[1]->player.myTurn = false;
-		printf("client1\n");
-        g_clients[0]->player.myTurn = true;
-    }
 }
 
 void PlayGame(LPVOID arg)
@@ -355,9 +392,7 @@ void PlayGame(LPVOID arg)
         send(info->socket, &msg, sizeof(msg), 0);
 
         WaitForCardPick(info);
-        SwitchTurn();
     }
-
 }
 
 DWORD WINAPI HandleClient(LPVOID arg)
@@ -373,19 +408,19 @@ DWORD WINAPI HandleClient(LPVOID arg)
     // 인원이 2명 모였는지 확인
     if (g_clientCount == MAX_CLIENTS)
 	{
-    	SetEvent(g_eventReadyGame);  // 잠금 해제, signal 상태로 전환
+    	SetEvent(g_readyGameEvent);  // 잠금 해제, signal 상태로 전환
 		printf("Player Cnt : 2\n");
 	}
 
     WaitForClientMessage(info, START_GAME);
 
 	// 게임이 시작 상태가 될떄까지 대기 (g_startGame 값이 true 인가?)
-    while (true)
-    {
-		Sleep(100);
-        if (g_startGame)
-            break;
-    }
+    WaitForSingleObject(g_startGameEvent, INFINITE);
+    // while (true)
+    // {
+    //     if (g_startGame)
+    //         break;
+    // }
 
     PlayGame(info); // 게임 시작
     //ExitGame(info);
@@ -441,7 +476,8 @@ void Init()
         ShutdownServer();
     }
 
-    g_eventReadyGame = CreateEvent(NULL, TRUE, FALSE, NULL);
+    g_readyGameEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    g_startGameEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 
     // 게임 시작 대기 스레드 생성
     thread_id = CreateThread(NULL, 0, WaitForGameStart, NULL, 0, NULL);
