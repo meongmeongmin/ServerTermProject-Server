@@ -15,7 +15,6 @@
 
 #define START_GAME 'S'
 #define YOUR_TURN 'Y'
-#define NOT_YOUR_TURN 'N'
 #define PICK_CARD 'P'
 #define EXIT 'E'
 
@@ -135,7 +134,6 @@ void BroadcastCards()
     {
         if (g_clients[i])
         {
-			// 본래 g_clients[0]으로 되어 있었음. 고침...
             send(g_clients[i]->socket, (char*)g_cards, totalSize, 0);
         }
     }
@@ -214,10 +212,6 @@ DWORD WINAPI WaitForGameStart(LPVOID arg) // 클라이언트 접속 전에 먼�
         if (g_startGame)
             continue;
         
-        /* TODO, For 최민규: 
-            - 주석 처리된 "인원이 2명 모였는지 확인"과 "먼저 시작할 플레이어 정하기"을 활성화(주석 해제)
-            - "Test (1인 테스트용, TODO: 2인 테스트 할 때 주석 처리 필요)" 주석이 있는 코드는 모두 주석 처리(Ctrl + /) */
-        
         // 인원이 모두 모였는지 확인, 인원이 모두 모일때까지 무한대로 기다림, 해당 이벤트가 signal상태가 될때까지 대기, 서버 시작시 여기서 대기하게 됨. -> WaitForGameStart
         WaitForSingleObject(g_eventReadyGame, INFINITE);
 
@@ -233,9 +227,6 @@ DWORD WINAPI WaitForGameStart(LPVOID arg) // 클라이언트 접속 전에 먼�
         // 먼저 시작할 플레이어 정하기
        	int idx = rand() % MAX_CLIENTS; // (0 ~ 1) 정수 범위
         g_clients[idx]->player.myTurn = true;
-
-        // Test (1인 테스트용, TODO: 2인 테스트 할 때 주석 처리 필요)
-        // g_clients[0]->player.myTurn = true;
 
         g_startGame = true;
 		printf("GameStart : %d\n", g_startGame); 
@@ -289,11 +280,13 @@ void WaitForCardPick(LPVOID arg)
     
     while (count < 2)
     {
+        WaitForClientMessage(info, PICK_CARD);
+
         char index;
         if (IsRecvSuccess(info, &index, sizeof(index)) == false)
             ExitGame(info);
 
-        if(index < 0 || index >= MAX_CARD_COUNT)
+        if (index < 0 || index >= MAX_CARD_COUNT)
         {
             printf("Invalid card index received: %d\n", index);
             ExitGame(info);
@@ -319,6 +312,7 @@ void WaitForCardPick(LPVOID arg)
 
         count++;
     }
+
     // 턴 전환은 카드 2장 고른 후에만 발생
 	printf("Two Pick Card\n");
     SwitchTurn();
@@ -330,32 +324,18 @@ void SwitchTurn() // 반복문에서 과도하게 호출되는 문제 있음
 {
     printf("SwitchTurn\n");
 	
-	// TODO : 1인 테스트를 위해 잠시 주석처리
     if (g_clients[0]->player.myTurn == true)
     {
         g_clients[0]->player.myTurn = false;
-		printf("client1\n");
-        // TODO, For 최민규: 2인으로 플레이어가 가능하면 아래에 주석 처리된 코드를 활성화
+		printf("client2\n");
         g_clients[1]->player.myTurn = true;
-
-		char msg = YOUR_TURN;
-		send(g_clients[1]->socket, &msg, sizeof(msg), 0);
-		msg = NOT_YOUR_TURN;
-		send(g_clients[0]->socket, &msg, sizeof(msg), 0);
     }
     else
     {
         g_clients[1]->player.myTurn = false;
-		printf("client2\n");
-        // TODO, For 최민규: 2인으로 플레이어가 가능하면 아래에 주석 처리된 코드를 활성화
+		printf("client1\n");
         g_clients[0]->player.myTurn = true;
-
-		char msg = NOT_YOUR_TURN;
-		send(g_clients[1]->socket, &msg, sizeof(msg), 0);
-		msg = YOUR_TURN;
-		send(g_clients[0]->socket, &msg, sizeof(msg), 0);
     }
-	BroadcastPlayerInfo();
 }
 
 void PlayGame(LPVOID arg)
@@ -371,22 +351,13 @@ void PlayGame(LPVOID arg)
         if (info->player.myTurn == false)
             continue;
 
-		//for 김정민 : 현재 하나의 클라이언트에게만 턴 정보를 보내고 있음, 턴 정보를 받지 못한 클라이언트는 무한대기 상태에 빠져버림.
-		//따라서 다음과 같이 수정함:	
-		if(info->player.myTurn == true)
-		{
-        	char msg = YOUR_TURN; 
-        	send(info->socket, &msg, sizeof(msg), 0);
-		}
-		else
-		{
-			char msg = NOT_YOUR_TURN;
-			send(info->socket, &msg, sizeof(msg), 0);
-		}
-        // TODO, For 최민규: 밑에 break 지우기
-        // break;
+        char msg = YOUR_TURN;
+        send(info->socket, &msg, sizeof(msg), 0);
+
+        WaitForCardPick(info);
+        SwitchTurn();
     }
-    WaitForCardPick(info);
+
 }
 
 DWORD WINAPI HandleClient(LPVOID arg)
@@ -406,14 +377,6 @@ DWORD WINAPI HandleClient(LPVOID arg)
 		printf("Player Cnt : 2\n");
 	}
 
-    // Test (1인 테스트용, TODO: 2인 테스트 할 때 주석 처리 필요)
-    // if (g_clientCount > 0)
-	// {
-	//		printf("1인 접속\n");
-	//      SetEvent(g_eventReadyGame); // 잠금 해제
-	// }
-
-    // Wait
     WaitForClientMessage(info, START_GAME);
 
 	// 게임이 시작 상태가 될떄까지 대기 (g_startGame 값이 true 인가?)
@@ -423,6 +386,7 @@ DWORD WINAPI HandleClient(LPVOID arg)
         if (g_startGame)
             break;
     }
+
     PlayGame(info); // 게임 시작
     //ExitGame(info);
 }
