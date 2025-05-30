@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdlib.h>
-#include <windows.h>
 #include <winsock2.h>
 #include <windows.h>
 #include <conio.h>
@@ -16,8 +15,11 @@
 
 #define START_GAME 'S'
 #define YOUR_TURN 'Y'
+#define NOT_YOUR_TURN 'N'
 #define PICK_CARD 'P'
 #define EXIT 'E'
+
+#pragma comment(lib, "ws2_32.lib")
 
 #pragma pack(push, 1) // 1바이트 정렬
 typedef struct Card
@@ -105,9 +107,12 @@ bool IsRecvSuccess(LPVOID arg, void* data, int size)
 
         total += len;
     }
+	ptr = NULL;
 
     return true;
 }
+
+void SwitchTurn();
 
 void BroadcastMessage(char msg)
 {
@@ -130,12 +135,13 @@ void BroadcastCards()
     {
         if (g_clients[i])
         {
-            send(g_clients[0]->socket, (char*)g_cards, totalSize, 0);
+			// 본래 g_clients[0]으로 되어 있었음. 고침...
+            send(g_clients[i]->socket, (char*)g_cards, totalSize, 0);
         }
     }
 }
 
-void BroadcastPlayerScore()
+void BroadcastPlayerInfo()
 {
     int size = sizeof(Player);
     int totalSize = size * g_clientCount;
@@ -146,8 +152,8 @@ void BroadcastPlayerScore()
     {
         if (g_clients[i])
         {
-            // TODO, For 최민규: 자기 자신의 점수만 업데이트 하고 있으므로, 상대방 플레이어 점수도 업데이트 하도록 수정 필요
             send(g_clients[i]->socket, (char*)&g_clients[0]->player, totalSize, 0); // 클라이언트에 점수 보냄
+            send(g_clients[i]->socket, (char*)&g_clients[1]->player, totalSize, 0); // 클라이언트에 점수 보냄
         }
     }
 }
@@ -199,7 +205,7 @@ void GenerateCards()    // 카드 id 생성
     printf("\n");
 }
 
-DWORD WINAPI WaitForGameStart(LPVOID arg)
+DWORD WINAPI WaitForGameStart(LPVOID arg) // 클라이언트 접속 전에 먼저 호출
 {
     printf("WaitForGameStart\n\n");
 
@@ -212,26 +218,27 @@ DWORD WINAPI WaitForGameStart(LPVOID arg)
             - 주석 처리된 "인원이 2명 모였는지 확인"과 "먼저 시작할 플레이어 정하기"을 활성화(주석 해제)
             - "Test (1인 테스트용, TODO: 2인 테스트 할 때 주석 처리 필요)" 주석이 있는 코드는 모두 주석 처리(Ctrl + /) */
         
-        // 인원이 모두 모였는지 확인
+        // 인원이 모두 모였는지 확인, 인원이 모두 모일때까지 무한대로 기다림, 해당 이벤트가 signal상태가 될때까지 대기, 서버 시작시 여기서 대기하게 됨. -> WaitForGameStart
         WaitForSingleObject(g_eventReadyGame, INFINITE);
 
-        ResetEvent(g_eventReadyGame);   // 다시 잠금
-        GenerateCards();
+        ResetEvent(g_eventReadyGame);   // 다시 잠금, non_signal
+        GenerateCards(); // 카드 생성
 
-        char message = START_GAME;
+        char message = START_GAME; // 게임 시작 메시지 브로드캐스트
         BroadcastMessage(message);
-        BroadcastCards();
 
         Sleep(1000);
+		BroadcastCards();
 
         // 먼저 시작할 플레이어 정하기
-        // int idx = rand() % MAX_CLIENTS; // (0 ~ 1) 정수 범위
-        // g_clients[idx]->player.myTurn = true;
+       	int idx = rand() % MAX_CLIENTS; // (0 ~ 1) 정수 범위
+        g_clients[idx]->player.myTurn = true;
 
         // Test (1인 테스트용, TODO: 2인 테스트 할 때 주석 처리 필요)
-        g_clients[0]->player.myTurn = true;
+        // g_clients[0]->player.myTurn = true;
 
         g_startGame = true;
+		printf("GameStart : %d\n", g_startGame); 
     }
 
     return 0;
@@ -255,11 +262,13 @@ void WaitForClientMessage(LPVOID arg, const char MESSAGE)   // 신호(메시지)
     ClientInfo* info = (ClientInfo*)arg;
     
     char msg;
-    if (IsRecvSuccess(info, &msg, sizeof(msg)) == false)
+    if (IsRecvSuccess(info, &msg, sizeof(msg)) == false) // 메시지 수신 실패하면 게임 종료
         ExitGame(info);
     
     if (msg == MESSAGE)
+	{
         return;
+	}
     
     if (msg == EXIT)
     {
@@ -273,55 +282,80 @@ void WaitForCardPick(LPVOID arg)
 {
     ClientInfo* info = (ClientInfo*)arg;
     int count = 0;
-    int card1Idx = -1;  // 첫번째로 고른 카드 인덱스
+    int card1Idx = -1;
 
     printf("%d: WaitForCardPick\n", ntohs(info->addr.sin_port));
     printf("======================================================================================================\n");
     
-    // 카드를 두 번 뽑을 때까지 기다린다
     while (count < 2)
     {
-        WaitForClientMessage(info, PICK_CARD);
-
-        int index;  // 선택한 카드 인덱스
+        char index;
         if (IsRecvSuccess(info, &index, sizeof(index)) == false)
             ExitGame(info);
 
-        count++;
-        // TODO: 선택된 카드 인덱스를 상대방 플레이어에게 전달
+        if(index < 0 || index >= MAX_CARD_COUNT)
+        {
+            printf("Invalid card index received: %d\n", index);
+            ExitGame(info);
+            return;
+        }
+
+        printf("PICK CARD COUNT : %d\n", count + 1);
         printf("Client: selected card index %d (id: %d)\n", index, g_cards[index].id);
 
-        if (card1Idx == -1)
-            card1Idx = index;
-
-        else if (g_cards[card1Idx].id == g_cards[index].id)
+        if (count == 0)
         {
-            // 카드가 일치하므로, 점수 증가
-            info->player.score++;
-			BroadcastPlayerScore(); // 각 플레이어에게 점수 뿌림
-            printf("+Points! => score: %d\n", info->player.score);
+            card1Idx = index;
         }
+        else
+        {
+            if (card1Idx != index && g_cards[card1Idx].id == g_cards[index].id)
+            {
+                info->player.score++;
+                printf("+Points! => score: %d\n", info->player.score);
+                BroadcastPlayerInfo();
+            }
+        }
+
+        count++;
     }
+    // 턴 전환은 카드 2장 고른 후에만 발생
+	printf("Two Pick Card\n");
+    SwitchTurn();
 
     printf("======================================================================================================\n");
 }
 
-void SwitchTurn()
+void SwitchTurn() // 반복문에서 과도하게 호출되는 문제 있음
 {
     printf("SwitchTurn\n");
-
+	
+	// TODO : 1인 테스트를 위해 잠시 주석처리
     if (g_clients[0]->player.myTurn == true)
     {
         g_clients[0]->player.myTurn = false;
+		printf("client1\n");
         // TODO, For 최민규: 2인으로 플레이어가 가능하면 아래에 주석 처리된 코드를 활성화
-        // g_clients[1]->player.myTurn = true;
+        g_clients[1]->player.myTurn = true;
+
+		char msg = YOUR_TURN;
+		send(g_clients[1]->socket, &msg, sizeof(msg), 0);
+		msg = NOT_YOUR_TURN;
+		send(g_clients[0]->socket, &msg, sizeof(msg), 0);
     }
     else
     {
         g_clients[1]->player.myTurn = false;
+		printf("client2\n");
         // TODO, For 최민규: 2인으로 플레이어가 가능하면 아래에 주석 처리된 코드를 활성화
-        // g_clients[0]->player.myTurn = true;
+        g_clients[0]->player.myTurn = true;
+
+		char msg = NOT_YOUR_TURN;
+		send(g_clients[1]->socket, &msg, sizeof(msg), 0);
+		msg = YOUR_TURN;
+		send(g_clients[0]->socket, &msg, sizeof(msg), 0);
     }
+	BroadcastPlayerInfo();
 }
 
 void PlayGame(LPVOID arg)
@@ -337,14 +371,22 @@ void PlayGame(LPVOID arg)
         if (info->player.myTurn == false)
             continue;
 
-        char msg = YOUR_TURN;
-        send(info->socket, &msg, sizeof(msg), 0);
-
-        WaitForCardPick(info);
-        SwitchTurn();
+		//for 김정민 : 현재 하나의 클라이언트에게만 턴 정보를 보내고 있음, 턴 정보를 받지 못한 클라이언트는 무한대기 상태에 빠져버림.
+		//따라서 다음과 같이 수정함:	
+		if(info->player.myTurn == true)
+		{
+        	char msg = YOUR_TURN; 
+        	send(info->socket, &msg, sizeof(msg), 0);
+		}
+		else
+		{
+			char msg = NOT_YOUR_TURN;
+			send(info->socket, &msg, sizeof(msg), 0);
+		}
         // TODO, For 최민규: 밑에 break 지우기
-        break;
+        // break;
     }
+    WaitForCardPick(info);
 }
 
 DWORD WINAPI HandleClient(LPVOID arg)
@@ -358,23 +400,31 @@ DWORD WINAPI HandleClient(LPVOID arg)
     Sleep(1000);
 
     // 인원이 2명 모였는지 확인
-    // if (g_clientCount == MAX_CLIENTS)
-    //     SetEvent(g_eventReadyGame);  // 잠금 해제
+    if (g_clientCount == MAX_CLIENTS)
+	{
+    	SetEvent(g_eventReadyGame);  // 잠금 해제, signal 상태로 전환
+		printf("Player Cnt : 2\n");
+	}
 
     // Test (1인 테스트용, TODO: 2인 테스트 할 때 주석 처리 필요)
-    if (g_clientCount > 0)
-        SetEvent(g_eventReadyGame); // 잠금 해제
+    // if (g_clientCount > 0)
+	// {
+	//		printf("1인 접속\n");
+	//      SetEvent(g_eventReadyGame); // 잠금 해제
+	// }
 
     // Wait
     WaitForClientMessage(info, START_GAME);
+
+	// 게임이 시작 상태가 될떄까지 대기 (g_startGame 값이 true 인가?)
     while (true)
     {
+		Sleep(100);
         if (g_startGame)
             break;
     }
-
-    PlayGame(info);
-    ExitGame(info);
+    PlayGame(info); // 게임 시작
+    //ExitGame(info);
 }
 
 void Init()
@@ -486,8 +536,8 @@ void Connect()
             continue;
         }
 
-        CloseHandle(client_thread_id);
         g_clients[g_clientCount++] = ci;
+        CloseHandle(client_thread_id);
     }
 }
 
