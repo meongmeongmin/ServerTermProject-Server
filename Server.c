@@ -14,6 +14,8 @@
 #define MAX_CARD_COUNT 24
 
 #define START_GAME 'S'
+#define WAIT_FOR_MY_TURN 'W'
+#define UPDATE 'U'
 #define YOUR_TURN 'Y'
 #define PICK_CARD 'P'
 #define EXIT 'E'
@@ -225,7 +227,6 @@ DWORD WINAPI WaitForGameStart(LPVOID arg) // 클라이언트 접속 전에 먼�
 		BroadcastCards();
 
         // 먼저 시작할 플레이어 정하기
-        srand(time(NULL));
        	int idx = rand() % MAX_CLIENTS; // (0 ~ 1) 정수 범위
         g_clients[idx]->player.myTurn = true;
         
@@ -264,23 +265,15 @@ void WaitForClientMessage(LPVOID arg, const char MESSAGE)   // 신호(메시지)
     if (IsRecvSuccess(info, &msg, sizeof(msg)) == false) // 메시지 수신 실패하면 게임 종료
         ExitGame(info);
     
-    if (msg == MESSAGE)
-	{
-        return;
-	}
-    
     if (msg == EXIT)
     {
-        printf("Client: EXIT\n");
+        printf("From Client(%d): EXIT\n", ntohs(info->addr.sin_port));
         ExitGame(info);
         return;
     }
-}
-
-// 모든 플레이어의 동기화를 기다린다. (플레이 화면)
-void WaitForSync()
-{
-
+    
+    if (msg != MESSAGE)
+        printf("Error %c! From Client(%d): %c\n", MESSAGE, ntohs(info->addr.sin_port), msg);
 }
 
 void SwitchTurn()
@@ -289,17 +282,17 @@ void SwitchTurn()
 	
     if (g_clients[0]->player.myTurn == true)
     {
-		printf(": client2(%d)\n", ntohs(g_clients[1]->addr.sin_port));
         g_clients[0]->player.myTurn = false;
         g_clients[1]->player.myTurn = true;
+		printf(": client2(%d)\n", ntohs(g_clients[1]->addr.sin_port));
 
         g_nextClient = g_clients[0];
     }
     else
     {
-		printf(": client1(%d)\n", ntohs(g_clients[0]->addr.sin_port));
         g_clients[1]->player.myTurn = false;
         g_clients[0]->player.myTurn = true;
+		printf(": client1(%d)\n", ntohs(g_clients[0]->addr.sin_port));
 
         g_nextClient = g_clients[1];
     }
@@ -318,8 +311,7 @@ void WaitForCardPick(LPVOID arg)
     // 카드가 짝이 아닐 때까지 계속 자기 차례이다.
     while (info->player.myTurn)
     {
-        char msg = PICK_CARD;
-        WaitForClientMessage(info, msg);
+        WaitForClientMessage(info, PICK_CARD);
 
         char index;
         if (IsRecvSuccess(info, &index, sizeof(index)) == false)
@@ -332,12 +324,13 @@ void WaitForCardPick(LPVOID arg)
             return;
         }
 
-        printf("Client: selected card index %d (id: %d)\n", index, g_cards[index].id);
+        printf("From Client(%d): selected card index %d (id: %d)\n", ntohs(info->addr.sin_port), index, g_cards[index].id);
 
         // 상대방 플레이어에게도 전달
-        printf("%d: Send Card\n", ntohs(info->addr.sin_port));
+        char msg = PICK_CARD;
         send(g_nextClient->socket, (char*)&msg, sizeof(msg), 0);
         send(g_nextClient->socket, (char*)&index, sizeof(index), 0);
+        printf("To Client(%d): send card index %d (id: %d)\n", ntohs(g_nextClient->addr.sin_port), index, g_cards[index].id);
 
         if (card1 == -1)
             card1 = g_cards[index].id;
@@ -348,21 +341,16 @@ void WaitForCardPick(LPVOID arg)
         if (++count == 2)
         {
             printf("Two Pick Card\n");
-            
-            if (card1 == card2)
-            {
-                info->player.score++;
-                printf("+Points! => score: %d\n", info->player.score);
-                //BroadcastPlayerInfo();
+            if (card1 != card2)
+                break;            
 
-                card1 = -1;
-                card2 = -1;
-            }
-            else
-            {
-                SwitchTurn();
-                break;
-            }
+            info->player.score++;
+            printf("+Points! => score: %d\n", info->player.score);
+            //BroadcastPlayerInfo();
+
+            count = 0;
+            card1 = -1;
+            card2 = -1;
         }
     }
 
@@ -376,16 +364,18 @@ void PlayGame(LPVOID arg)
 
     while (true)
     {
-        if (g_startGame == false)
-            break;
-        
+        WaitForClientMessage(info, WAIT_FOR_MY_TURN);
         if (info->player.myTurn == false)
+        {
+            WaitForClientMessage(info, UPDATE);
             continue;
+        }
 
         char msg = YOUR_TURN;
         send(info->socket, &msg, sizeof(msg), 0);
 
         WaitForCardPick(info);
+        SwitchTurn();
     }
 }
 
@@ -404,8 +394,6 @@ DWORD WINAPI HandleClient(LPVOID arg)
 		printf("Player Cnt : 2\n");
 	}
 
-    WaitForClientMessage(info, START_GAME);
-    Sleep(1000);
     PlayGame(info); // 게임 시작
     //ExitGame(info);
 }
