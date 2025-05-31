@@ -56,7 +56,6 @@ Card g_cards[MAX_CARD_COUNT];
 
 // CPU 점유 방지
 HANDLE g_readyGameEvent;    // 게임 시작 전 준비(카드 배치)
-HANDLE g_startGameEvent;    // 게임 시작 가능
 
 #pragma region ShutdownServer
 void ShutdownServer()
@@ -75,7 +74,6 @@ void ShutdownServer()
     closesocket(g_server_socket);
     WSACleanup();
     CloseHandle(g_readyGameEvent);
-    CloseHandle(g_startGameEvent);
     exit(0);
 }
 
@@ -223,8 +221,7 @@ DWORD WINAPI WaitForGameStart(LPVOID arg) // 클라이언트 접속 전에 먼�
         ResetEvent(g_readyGameEvent);   // 다시 잠금, non_signal
         GenerateCards(); // 카드 생성
 
-        char message = START_GAME; // 게임 시작 메시지 브로드캐스트
-        BroadcastMessage(message);
+        BroadcastMessage(START_GAME);
 		BroadcastCards();
 
         // 먼저 시작할 플레이어 정하기
@@ -239,8 +236,6 @@ DWORD WINAPI WaitForGameStart(LPVOID arg) // 클라이언트 접속 전에 먼�
             g_nextClient = g_clients[1];
 
         g_startGame = true;
-        Sleep(1000);
-        SetEvent(g_startGameEvent);
     }
 
     return 0;
@@ -253,7 +248,6 @@ void ExitGame(LPVOID arg)
 
     g_clientCount--;
     g_startGame = false;
-    ResetEvent(g_startGameEvent);
     
     g_nextClient = NULL;
 
@@ -402,9 +396,7 @@ DWORD WINAPI HandleClient(LPVOID arg)
 
     char* message = "Server connection successful!";
     send(info->socket, message, strlen(message), 0);
-
-    Sleep(1000);
-
+    
     // 인원이 2명 모였는지 확인
     if (g_clientCount == MAX_CLIENTS)
 	{
@@ -413,15 +405,7 @@ DWORD WINAPI HandleClient(LPVOID arg)
 	}
 
     WaitForClientMessage(info, START_GAME);
-
-	// 게임이 시작 상태가 될떄까지 대기 (g_startGame 값이 true 인가?)
-    WaitForSingleObject(g_startGameEvent, INFINITE);
-    // while (true)
-    // {
-    //     if (g_startGame)
-    //         break;
-    // }
-
+    Sleep(1000);
     PlayGame(info); // 게임 시작
     //ExitGame(info);
 }
@@ -477,7 +461,6 @@ void Init()
     }
 
     g_readyGameEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-    g_startGameEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 
     // 게임 시작 대기 스레드 생성
     thread_id = CreateThread(NULL, 0, WaitForGameStart, NULL, 0, NULL);
