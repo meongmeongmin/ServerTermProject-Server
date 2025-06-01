@@ -51,13 +51,13 @@ ClientInfo* g_clients[MAX_CLIENTS];
 int g_clientCount = 0;
 
 volatile bool g_startGame = false;  // 게임 시작 여부
-volatile bool g_readyToStartTurn = false;   // 다음 턴 시작 가능 여부
 
 ClientInfo* g_nextClient;   // 다음 차례 클라이언트
 Card g_cards[MAX_CARD_COUNT];
 
 // CPU 점유 방지
 HANDLE g_readyGameEvent;    // 게임 시작 전 준비(카드 배치)
+HANDLE g_startEvent;    // 게임 플레이 가능
 
 #pragma region ShutdownServer
 void ShutdownServer()
@@ -76,6 +76,7 @@ void ShutdownServer()
     closesocket(g_server_socket);
     WSACleanup();
     CloseHandle(g_readyGameEvent);
+    CloseHandle(g_startEvent);
     exit(0);
 }
 
@@ -249,9 +250,9 @@ void ExitGame(LPVOID arg)
 
     g_clientCount--;
     g_startGame = false;
-    
     g_nextClient = NULL;
 
+    SetEvent(g_startEvent);
     closesocket(info->socket);
     free(info);
     ExitThread(0);
@@ -298,7 +299,7 @@ void SwitchTurn()
     }
 }
 
-void WaitForCardPick(LPVOID arg)
+bool WaitForCardPick(LPVOID arg)
 {
     ClientInfo* info = (ClientInfo*)arg;
     int count = 0;
@@ -315,16 +316,27 @@ void WaitForCardPick(LPVOID arg)
 
         char index;
         if (IsRecvSuccess(info, &index, sizeof(index)) == false)
+        {
             ExitGame(info);
+            return false;
+        }
 
         if (index < 0 || index >= MAX_CARD_COUNT)
         {
             printf("Invalid card index received: %d\n", index);
             ExitGame(info);
-            return;
+            return false;
         }
 
         printf("From Client(%d): selected card index %d (id: %d)\n", ntohs(info->addr.sin_port), index, g_cards[index].id);
+
+        if (g_startGame == false)
+        {
+            printf("The other player has left the game.\n");
+            return false;
+        }
+
+        SetEvent(g_startEvent);
 
         // 상대방 플레이어에게도 전달
         char msg = PICK_CARD;
@@ -355,6 +367,7 @@ void WaitForCardPick(LPVOID arg)
     }
 
     printf("======================================================================================================\n");
+    return true;
 }
 
 void PlayGame(LPVOID arg)
@@ -367,6 +380,11 @@ void PlayGame(LPVOID arg)
         WaitForClientMessage(info, WAIT_FOR_MY_TURN);
         if (info->player.myTurn == false)
         {
+            WaitForSingleObject(g_startEvent, INFINITE);
+            if (g_startGame == false)
+                break;
+            
+            ResetEvent(g_startEvent);
             WaitForClientMessage(info, UPDATE);
             continue;
         }
@@ -374,7 +392,9 @@ void PlayGame(LPVOID arg)
         char msg = YOUR_TURN;
         send(info->socket, &msg, sizeof(msg), 0);
 
-        WaitForCardPick(info);
+        if (WaitForCardPick(info) == false)
+            return;
+
         SwitchTurn();
     }
 }
@@ -389,13 +409,19 @@ DWORD WINAPI HandleClient(LPVOID arg)
     
     // 인원이 2명 모였는지 확인
     if (g_clientCount == MAX_CLIENTS)
-	{
-    	SetEvent(g_readyGameEvent);  // 잠금 해제, signal 상태로 전환
-		printf("Player Cnt : 2\n");
-	}
+    {
+        SetEvent(g_readyGameEvent);  // 잠금 해제, signal 상태로 전환
+        printf("Player Cnt : 2\n");
+    }
 
     PlayGame(info); // 게임 시작
-    //ExitGame(info);
+
+    char msg = EXIT;
+    send(info->socket, &msg, sizeof(msg), 0);
+    printf("To Client(%d): EXIT\n", ntohs(info->addr.sin_port));
+
+    WaitForClientMessage(info, EXIT);
+    ExitGame(info);
 }
 
 void Init()
@@ -449,6 +475,7 @@ void Init()
     }
 
     g_readyGameEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    g_startEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 
     // 게임 시작 대기 스레드 생성
     thread_id = CreateThread(NULL, 0, WaitForGameStart, NULL, 0, NULL);
