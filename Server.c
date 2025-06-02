@@ -57,7 +57,6 @@ Card g_cards[MAX_CARD_COUNT];
 
 // CPU 점유 방지
 HANDLE g_readyGameEvent;    // 게임 시작 전 준비(카드 배치)
-HANDLE g_startEvent;    // 게임 플레이 가능
 
 #pragma region ShutdownServer
 void ShutdownServer()
@@ -76,7 +75,6 @@ void ShutdownServer()
     closesocket(g_server_socket);
     WSACleanup();
     CloseHandle(g_readyGameEvent);
-    CloseHandle(g_startEvent);
     exit(0);
 }
 
@@ -114,6 +112,32 @@ bool IsRecvSuccess(LPVOID arg, void* data, int size)
     }
 
 	ptr = NULL;
+    return true;
+}
+
+void ExitGame(LPVOID arg);
+
+bool WaitForClientMessage(LPVOID arg, const char MESSAGE)   // 신호(메시지)를 기다린다
+{
+    ClientInfo* info = (ClientInfo*)arg;
+    
+    char msg;
+    if (IsRecvSuccess(info, &msg, sizeof(msg)) == false) // 메시지 수신 실패하면 게임 종료
+    {
+        ExitGame(info);
+        return false;
+    }
+    
+    if (msg == EXIT)
+    {
+        printf("From Client(%d): EXIT\n", ntohs(info->addr.sin_port));
+        ExitGame(info);
+        return false;
+    }
+    
+    if (msg != MESSAGE)
+        printf("Error %c! From Client(%d): %c\n", MESSAGE, ntohs(info->addr.sin_port), msg);
+
     return true;
 }
 
@@ -230,6 +254,7 @@ DWORD WINAPI WaitForGameStart(LPVOID arg) // 클라이언트 접속 전에 먼�
         // 먼저 시작할 플레이어 정하기
        	int idx = rand() % MAX_CLIENTS; // (0 ~ 1) 정수 범위
         g_clients[idx]->player.myTurn = true;
+        printf("Your turn => %d\n", ntohs(g_clients[idx]->addr.sin_port));
         
         // 다음 차례 클라이언트 설정
         if (idx != 0)
@@ -245,36 +270,41 @@ DWORD WINAPI WaitForGameStart(LPVOID arg) // 클라이언트 접속 전에 먼�
 
 void ExitGame(LPVOID arg)
 {
+    if (g_clientCount <= 0)
+        return;
+
     ClientInfo* info = (ClientInfo*)arg;
     printf("%d: ExitGame\n\n", ntohs(info->addr.sin_port));
 
     g_clientCount--;
-    g_startGame = false;
-    g_nextClient = NULL;
 
-    SetEvent(g_startEvent);
-    closesocket(info->socket);
-    free(info);
-    ExitThread(0);
-}
-
-void WaitForClientMessage(LPVOID arg, const char MESSAGE)   // 신호(메시지)를 기다린다
-{
-    ClientInfo* info = (ClientInfo*)arg;
-    
-    char msg;
-    if (IsRecvSuccess(info, &msg, sizeof(msg)) == false) // 메시지 수신 실패하면 게임 종료
-        ExitGame(info);
-    
-    if (msg == EXIT)
+    if (g_startGame)
     {
-        printf("From Client(%d): EXIT\n", ntohs(info->addr.sin_port));
-        ExitGame(info);
-        return;
+        g_nextClient = NULL;
+        g_startGame = false;
+        
+        ClientInfo* otherClient;
+        if (info != g_clients[0])
+            otherClient = g_clients[0];
+        else
+            otherClient = g_clients[1];
+
+        closesocket(info->socket);
+        free(info);
+
+        ExitGame(otherClient);
+        ExitThread(0);
     }
-    
-    if (msg != MESSAGE)
-        printf("Error %c! From Client(%d): %c\n", MESSAGE, ntohs(info->addr.sin_port), msg);
+    else
+    {
+        char msg = EXIT;
+        send(info->socket, &msg, sizeof(msg), 0);
+        printf("To Client(%d): EXIT\n", ntohs(info->addr.sin_port));
+
+        closesocket(info->socket);
+        free(info);
+        ExitThread(0);
+    }
 }
 
 void SwitchTurn()
@@ -312,7 +342,8 @@ bool WaitForCardPick(LPVOID arg)
     // 카드가 짝이 아닐 때까지 계속 자기 차례이다.
     while (info->player.myTurn)
     {
-        WaitForClientMessage(info, PICK_CARD);
+        if (WaitForClientMessage(info, PICK_CARD) == false)
+            return false;
 
         char index;
         if (IsRecvSuccess(info, &index, sizeof(index)) == false)
@@ -330,13 +361,11 @@ bool WaitForCardPick(LPVOID arg)
 
         printf("From Client(%d): selected card index %d (id: %d)\n", ntohs(info->addr.sin_port), index, g_cards[index].id);
 
-        if (g_startGame == false)
-        {
-            printf("The other player has left the game.\n");
-            return false;
-        }
-
-        SetEvent(g_startEvent);
+        // if (g_startGame == false)
+        // {
+        //     printf("The other player has left the game.\n");
+        //     return false;
+        // }
 
         // 상대방 플레이어에게도 전달
         char msg = PICK_CARD;
@@ -377,15 +406,14 @@ void PlayGame(LPVOID arg)
 
     while (true)
     {
-        WaitForClientMessage(info, WAIT_FOR_MY_TURN);
+        if (WaitForClientMessage(info, WAIT_FOR_MY_TURN) == false)
+            return;
+
         if (info->player.myTurn == false)
         {
-            WaitForSingleObject(g_startEvent, INFINITE);
-            if (g_startGame == false)
-                break;
+            if (WaitForClientMessage(info, UPDATE) == false)
+                return;
             
-            ResetEvent(g_startEvent);
-            WaitForClientMessage(info, UPDATE);
             continue;
         }
 
@@ -407,7 +435,7 @@ DWORD WINAPI HandleClient(LPVOID arg)
     char* message = "Server connection successful!";
     send(info->socket, message, strlen(message), 0);
     
-    // 인원이 2명 모였는지 확인
+    // 인원이 모두 모였는지 확인
     if (g_clientCount == MAX_CLIENTS)
     {
         SetEvent(g_readyGameEvent);  // 잠금 해제, signal 상태로 전환
@@ -415,13 +443,7 @@ DWORD WINAPI HandleClient(LPVOID arg)
     }
 
     PlayGame(info); // 게임 시작
-
-    char msg = EXIT;
-    send(info->socket, &msg, sizeof(msg), 0);
-    printf("To Client(%d): EXIT\n", ntohs(info->addr.sin_port));
-
-    WaitForClientMessage(info, EXIT);
-    ExitGame(info);
+    return 0;
 }
 
 void Init()
@@ -475,7 +497,6 @@ void Init()
     }
 
     g_readyGameEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-    g_startEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 
     // 게임 시작 대기 스레드 생성
     thread_id = CreateThread(NULL, 0, WaitForGameStart, NULL, 0, NULL);
@@ -503,7 +524,7 @@ void Connect()
         client_socket = accept(g_server_socket, (struct sockaddr*)&client_addr, &client_addr_len);
         if (client_socket == INVALID_SOCKET)
         {
-            perror("accept() failed");
+            //perror("accept() failed");
             continue;
         }
 
