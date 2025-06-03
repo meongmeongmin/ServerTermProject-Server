@@ -34,6 +34,7 @@ typedef struct Card
 #pragma pack(push, 1) // 1바이트 정렬
 typedef struct Player
 {
+    int id;
     int score;
     bool myTurn;
 } Player;
@@ -57,6 +58,7 @@ Card g_cards[MAX_CARD_COUNT];
 
 // CPU 점유 방지
 HANDLE g_readyGameEvent;    // 게임 시작 전 준비(카드 배치)
+HANDLE g_playerInfoEvent;   // 플레이어 데이터 브로드캐스트 타이밍 체크를 위한 이벤트 핸들
 
 #pragma region ShutdownServer
 void ShutdownServer()
@@ -169,18 +171,17 @@ void BroadcastCards()
 
 void BroadcastPlayerInfo()
 {
-    int size = sizeof(Player);
-    int totalSize = size * g_clientCount;
+    Player players[MAX_CLIENTS];
+    for (int i = 0; i < g_clientCount; i++)
+    {
+        players[i] = g_clients[i]->player;
+    }
 
-    printf("Brodcast Player Score\n");
+    printf("BroadcastPlayerInfo\n");
 
     for (int i = 0; i < g_clientCount; i++)
     {
-        if (g_clients[i])
-        {
-            send(g_clients[i]->socket, (char*)&g_clients[0]->player, totalSize, 0); // 클라이언트에 점수 보냄
-            send(g_clients[i]->socket, (char*)&g_clients[1]->player, totalSize, 0); // 클라이언트에 점수 보냄
-        }
+        send(g_clients[i]->socket, (char*)players, sizeof(players), 0);
     }
 }
 #pragma endregion
@@ -263,6 +264,19 @@ DWORD WINAPI WaitForGameStart(LPVOID arg) // 클라이언트 접속 전에 먼�
             g_nextClient = g_clients[1];
 
         g_startGame = true;
+    }
+
+    return 0;
+}
+
+DWORD WINAPI BroadcastPlayerInfoThread(LPVOID arg)
+{
+    while (true)
+    {
+        // 이벤트 대기
+        WaitForSingleObject(g_playerInfoEvent, INFINITE);
+        BroadcastPlayerInfo(); // 플레이어 정보 전송
+        ResetEvent(g_playerInfoEvent); // 이벤트 비활성화
     }
 
     return 0;
@@ -383,11 +397,14 @@ bool WaitForCardPick(LPVOID arg)
         {
             printf("Two Pick Card\n");
             if (card1 != card2)
-                break;            
+            {
+                SetEvent(g_playerInfoEvent);
+                break;   
+            }         
 
             info->player.score++;
             printf("+Points! => score: %d\n", info->player.score);
-            //BroadcastPlayerInfo();
+            SetEvent(g_playerInfoEvent); 
 
             count = 0;
             card1 = -1;
@@ -434,6 +451,9 @@ DWORD WINAPI HandleClient(LPVOID arg)
 
     char* message = "Server connection successful!";
     send(info->socket, message, strlen(message), 0);
+
+    info->player.id = g_clientCount; // 플레이어 id 생성
+    printf("player id : %d\n", info->player.id);
     
     // 인원이 모두 모였는지 확인
     if (g_clientCount == MAX_CLIENTS)
@@ -505,6 +525,21 @@ void Init()
         perror("CreateThread() failed");
         ShutdownServer();
     }
+
+    g_playerInfoEvent = CreateEvent(NULL, TRUE, FALSE, NULL); // 플레이어 정보를 실시간으로 보내기 위한 이벤트
+    if (g_playerInfoEvent == NULL)
+    {
+        perror("CreateEvent() failed");
+        ShutdownServer();
+    }
+
+    thread_id = CreateThread(NULL, 0, BroadcastPlayerInfoThread, NULL, 0, NULL); // 플레이어 브로드캐스트 쓰레드 생성
+    if (thread_id == NULL)
+    {
+        perror("CreateThread() failed");
+        ShutdownServer();
+    }
+
 }
 
 void Connect()
@@ -516,6 +551,8 @@ void Connect()
 
     // 초기화된 플레이어 기본 정보
     Player p;
+
+    p.id = 0;
     p.myTurn = false;
     p.score = 0;
 
